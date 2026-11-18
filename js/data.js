@@ -9,7 +9,9 @@
 
   // ---- Configuración: nombres de columna (idénticos a utils/config.py) ----
   const CFG = {
-    ANIO_ACTUAL: 2026,
+    ANIO_ACTUAL: 2027,
+    // Etiqueta usada para la meta que aún no tiene especialista asignado.
+    SIN_ASIGNAR: "SIN ASIGNAR",
     ANIOS_SIN_SERVICIO: 3,
     // Programa institucional principal: la meta de clientes se muestra por
     // defecto para este programa (CdD-FEST u otros solo al filtrarlos).
@@ -22,6 +24,8 @@
       bd:          "data/bd.xlsx",
       programado:  "data/programado.xlsx",
       results_ice: "data/results_ice.xlsx",
+      // Reparto (%) de la meta de cada tarea entre especialistas (hoja ASIGNACION)
+      asignacion:  "data/asignacion.xlsx",
     },
     // Ejecución
     X: {
@@ -219,18 +223,71 @@
   // -------------------------------------------------------------------------
   // Lectura de un archivo .xlsx
   // -------------------------------------------------------------------------
-  async function readSheet(url) {
+  // Devuelve las filas normalizadas; `rows.headers` trae las cabeceras de la
+  // hoja aunque no tenga filas (p. ej. ejecucion.xlsx vacía en planificación).
+  async function readSheet(url, sheetName) {
     const resp = await fetch(url, { cache: "no-store" });
     if (!resp.ok) throw new Error(`No se pudo leer ${url} (HTTP ${resp.status})`);
     const buf = await resp.arrayBuffer();
     const wb = XLSX.read(buf, { type: "array", cellDates: true });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { defval: null, raw: true });
-    return normalizeRows(rows);
+    const name = sheetName && wb.SheetNames.includes(sheetName) ? sheetName : wb.SheetNames[0];
+    const ws = wb.Sheets[name];
+    const rows = normalizeRows(XLSX.utils.sheet_to_json(ws, { defval: null, raw: true }));
+    const head = (XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false })[0] || []);
+    rows.headers = head.filter((h) => h != null && String(h).trim() !== "")
+      .map((h) => String(h).trim().toUpperCase());
+    return rows;
   }
-  async function readSheetOptional(url) {
-    try { return await readSheet(url); }
+  async function readSheetOptional(url, sheetName) {
+    try { return await readSheet(url, sheetName); }
     catch (e) { return null; }
+  }
+
+  // ---- Reparto de metas por especialista (asignacion.xlsx) ----------------
+  // Hoja ASIGNACION: una fila por TIPO_TAREA y una columna por especialista
+  // con el % de la meta de esa tarea que le corresponde (0,25 o 25 = 25 %).
+  // Columnas que NO son especialistas: tipo/tarea/meta/total/estado/base…
+  const NO_ESP = /^(TIPO|META|TOTAL|ESTADO|BASE|PROGRAMA|OBSERV|NOTA|N$|NRO|ITEM|COD)/;
+  function parseAsignacion(rows) {
+    const porTarea = new Map(); // tarea normalizada -> [{esp, share}]
+    if (!rows || !rows.length) return { porTarea, especialistas: [] };
+    const espCols = (rows.headers || Object.keys(rows[0])).filter((h) => !NO_ESP.test(normKey(h)));
+    for (const r of rows) {
+      const tarea = r.TIPO_TAREA != null ? String(r.TIPO_TAREA).replace(/\s+/g, " ").trim() : "";
+      if (!tarea) continue;
+      const list = [];
+      for (const col of espCols) {
+        let v = toNum(r[col]);
+        if (v > 1.0001) v = v / 100;           // admite 25 o 25 %
+        if (v > 0) list.push({ esp: String(col).replace(/\s+/g, " ").trim(), share: v });
+      }
+      porTarea.set(tarea, list);
+    }
+    return { porTarea, especialistas: espCols.map((c) => String(c).replace(/\s+/g, " ").trim()) };
+  }
+
+  // Las filas de metas.xlsx SIN especialista se reparten según la asignación:
+  // una fila virtual por especialista (META × %) y el resto, si lo hay, queda
+  // como "SIN ASIGNAR". Las filas que ya traen ESPECIALISTA se respetan tal cual.
+  function repartirMetas(met, asig) {
+    const M = CFG.M, out = [];
+    for (const r of met) {
+      const esp = r[M.ESPECIALISTA] != null ? String(r[M.ESPECIALISTA]).trim() : "";
+      if (esp) { r.ORIGEN_META = "directa"; out.push(r); continue; }
+      const tarea = String(r[M.TAREA] == null ? "" : r[M.TAREA]).replace(/\s+/g, " ").trim();
+      const list = asig.porTarea.get(tarea) || [];
+      let asignado = 0;
+      for (const { esp: e, share } of list) {
+        const meta = r[M.META] * share;
+        asignado += share;
+        out.push(Object.assign({}, r, { [M.ESPECIALISTA]: e, [M.META]: meta, [M.META_FOC]: r[M.META_FOC] * share, ORIGEN_META: "reparto", SHARE: share }));
+      }
+      const resto = Math.max(0, 1 - asignado);
+      if (resto > 1e-6) {
+        out.push(Object.assign({}, r, { [M.ESPECIALISTA]: CFG.SIN_ASIGNAR, [M.META]: r[M.META] * resto, [M.META_FOC]: r[M.META_FOC] * resto, ORIGEN_META: "sin_asignar", SHARE: resto }));
+      }
+    }
+    return out;
   }
 
   // -------------------------------------------------------------------------
@@ -251,7 +308,8 @@
     }
 
     // Ejecución (obligatorio)
-    const eje = (await readSheet(CFG.FILES.ejecucion)).map((r) => {
+    const ejeRaw = await readSheet(CFG.FILES.ejecucion);
+    const eje = ejeRaw.map((r) => {
       const o = Object.assign({}, r);
       o[X.RUC] = normRuc(o[X.RUC]);
       o[X.CANTIDAD] = toNum(o[X.CANTIDAD]);
@@ -286,7 +344,8 @@
     }
 
     // Metas (obligatorio)
-    const met = (await readSheet(CFG.FILES.metas)).map((r) => {
+    const metRaw = await readSheet(CFG.FILES.metas);
+    const metBase = metRaw.map((r) => {
       const o = Object.assign({}, r);
       o[M.META] = toNum(o[M.META]);
       o[M.META_FOC] = toNum(o[M.META_FOC]);
@@ -295,6 +354,8 @@
       if (o[M.COMPLEJIDAD] != null) o[M.COMPLEJIDAD] = normComplejidad(o[M.COMPLEJIDAD]);
       return o;
     });
+    const asignacion = parseAsignacion(await readSheetOptional(CFG.FILES.asignacion, "ASIGNACION"));
+    const met = repartirMetas(metBase, asignacion);
 
     // Clientes (opcional): metas de clientes por mes/tipo
     let cli = await readSheetOptional(CFG.FILES.clientes);
@@ -402,11 +463,11 @@
     // Validación mínima de estructura (mensaje claro en pantalla)
     const faltan = [];
     const need = [
-      ["ejecucion.xlsx", eje, [X.MES, X.ESPECIALISTA, X.RUC, X.CANTIDAD]],
-      ["metas.xlsx", met, [M.MES, M.ESPECIALISTA, M.META]],
+      ["ejecucion.xlsx", ejeRaw.headers, [X.MES, X.ESPECIALISTA, X.RUC, X.CANTIDAD]],
+      ["metas.xlsx", metRaw.headers, [M.MES, M.TAREA, M.META]],
     ];
-    for (const [name, rows, cols] of need) {
-      const present = rows.length ? new Set(Object.keys(rows[0])) : new Set();
+    for (const [name, headers, cols] of need) {
+      const present = new Set(headers || []);
       for (const c of cols) if (!present.has(c)) faltan.push(`${name} → falta la columna '${c}'`);
     }
     if (faltan.length) {
@@ -415,7 +476,10 @@
       throw err;
     }
 
-    return { ejecucion: eje, metas: met, focalizados: focRows || [], clientes: cli, bd, programado, resultsIce };
+    return {
+      ejecucion: eje, metas: met, metasBase: metBase, asignacion,
+      focalizados: focRows || [], clientes: cli, bd, programado, resultsIce,
+    };
   }
 
   // -------------------------------------------------------------------------

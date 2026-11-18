@@ -1,150 +1,158 @@
-# CITE · Seguimiento de programas 2026
+# CITE · Control de ejecución POI 2027
 
-Tablero de **seguimiento de servicios, clientes y metas** de los programas del CITE en
-2026 (POI, CdD-FEST y los programas disponibles en los datos): META vs EJECUCIÓN, cumplimiento por especialista, programa presupuestal,
-clientes (nuevos / reenganchados / focalizados) y estructura de servicios.
+Tablero de **control de la ejecución de servicios, clientes y metas** del POI 2027
+del CITE Textil Camélidos Cusco: cuadro de ejecución por servicio y tarea, metas por
+especialista y mes, clientes (nuevos / reenganchados / focalizados) e intervenciones
+financiadas por **World Vision**.
 
-Es un **sitio estático** (HTML + CSS + JavaScript). Lee los Excel de `data/`
-directamente en el navegador, así que **se publica en GitHub Pages** y se
-actualiza sólo reemplazando los archivos de `data/` y haciendo `git push`
-— sin tocar el código.
+🔗 **https://citedev206.github.io/Insights_POI_2027/** (p. ej. `#ejecutivo`, `#servicios`, `#especialistas`, `#clientes`, `#calendario`)
+
+Es un **sitio estático** (HTML + CSS + JavaScript) que lee los Excel de `data/`
+directamente en el navegador: se actualiza reemplazando los archivos de `data/`
+y haciendo `git push`, sin tocar el código.
 
 ---
 
+## 🗓️ Fases del año
+
+| Fase | Cuándo | Qué muestra |
+|---|---|---|
+| **Planificación** | `ejecucion.xlsx` sin filas (situación actual) | Metas programadas por servicio, tarea, especialista y mes. Sin semáforos (no se marca a nadie "en riesgo"). Banner "Fase de planificación 2027". |
+| **Ejecución** | desde la primera fila de `ejecucion.xlsx` | Ejecutado vs **meta acumulada al mes de corte** (último mes con ejecución). Los meses siguientes siguen mostrando su meta en gris. |
+
+> El "mes de corte" evita que en marzo aparezca "en riesgo" un avance que va al
+> día: se compara contra la meta Ene–Mar y no contra la meta de todo el año.
+> La meta anual se sigue mostrando como referencia.
+
+## 🧭 Vistas (en este orden)
+
+1. **Resumen** (`#ejecutivo`): indicadores clave, **cuadro de ejecución** (tipo de
+   servicio → tarea × mes, en orden de catálogo 1.→8.; clic en un servicio para
+   plegar sus tareas), avance mensual, peso/avance por tipo de servicio y detalle
+   por especialista. *Exportar* descarga el cuadro en CSV.
+2. **Servicios**: meta / avance y cobertura ponderada por tipo de servicio y tarea,
+   con filtro de complejidad.
+3. **Especialistas**: tabla **especialista × mes** (meta, o ejecutado/meta),
+   heatmap tarea × mes, evolución y referencia de clientes por especialista.
+4. **Clientes**: metas de clientes por mes (planificación) o padrón, focalización
+   y antigüedad (ejecución).
+5. **World Vision** (`#calendario`): servicios POI con `FINANCIADO = WORLDVISION`
+   (resumen, calendario por RUC y salidas por especialista). Se llena sola cuando
+   aparezcan esas filas en `ejecucion.xlsx`.
+6. *Programas* y *CdD-FEST* solo aparecen si los datos traen más de un programa
+   o filas de CdD-FEST (en 2027 el POI es el único programa con metas).
+
+## 👥 Metas por especialista (`data/asignacion.xlsx`)
+
+`metas.xlsx` trae la meta **por tarea y mes**, sin especialista. El reparto se
+define en `asignacion.xlsx`:
+
+* Hoja **ASIGNACION**: una fila por tarea, una columna por especialista con el
+  **% de la meta** de esa tarea que le toca (celdas amarillas). `TOTAL_%` debe
+  quedar en 100 % (verde); `ESTADO` dice OK / FALTA / EXCEDE / SIN ASIGNAR.
+* El tablero reparte la meta de **cada mes** con esos % y muestra lo que falte
+  como **"SIN ASIGNAR"** (fila destacada en ámbar).
+* Hojas de apoyo con fórmulas: `METAS_2027` (copia de metas.xlsx),
+  `META_ESPECIALISTA_MES` y `META_TAREA_ESPECIALISTA`. Instrucciones en `LEEME`.
+* Los % iniciales son una **propuesta** basada en el reparto de metas POI 2026
+  (o la ejecución 2026 si la tarea no tuvo meta). Hay que revisarlos.
+* Si una meta ya tiene responsable exacto, se puede escribir directamente en
+  `metas.xlsx` llenando `ESPECIALISTA`: esas filas no se reparten.
+
 ## 🔗 Publicar en GitHub Pages
 
-1. Sube el repositorio a GitHub (rama `main`).
-2. En GitHub: **Settings → Pages → Build and deployment**
-   - *Source*: **Deploy from a branch**
-   - *Branch*: `main` · carpeta `/ (root)` → **Save**
-3. En 1–2 minutos el tablero queda en
-   `https://<usuario>.github.io/<repositorio>/`
+1. Crear en GitHub el repositorio **`Citedev206/Insights_POI_2027`** (vacío).
+2. Desde esta carpeta (el remoto `origin` ya apunta a ese repositorio):
+   ```bash
+   git add -A
+   git commit -m "POI 2027: planificación, cuadro de ejecución y metas por especialista"
+   git push -u origin main
+   ```
+3. En GitHub: **Settings → Pages → Deploy from a branch** · `main` · `/ (root)`.
+4. En 1–2 minutos queda en `https://citedev206.github.io/Insights_POI_2027/`.
 
-> El archivo `.nojekyll` (ya incluido) evita que GitHub procese el sitio con
-> Jekyll y sirve las carpetas `js/` y `data/` tal cual.
+> `.nojekyll` (incluido) evita que GitHub procese el sitio con Jekyll.
 
 ## 🔄 Actualizar los datos (flujo sin código)
 
 ```bash
-# 1) Reemplaza los Excel en data/ con los nuevos (mismos nombres y columnas)
-# 2) Publica
+# 1) Reemplaza/edita los Excel en data/ (mismos nombres y columnas)
 git add data/
-git commit -m "Actualiza datos POI"
+git commit -m "Actualiza datos POI 2027"
 git push
 ```
 
-GitHub Pages se regenera solo. El tablero muestra los datos nuevos al recargar.
-**No hay que modificar ningún archivo de código.**
-
 ## 🖥️ Vista previa local
 
-GitHub Pages usa HTTP; en local también necesitas un servidor (abrir el
-`index.html` con `file://` **no** funciona porque el navegador bloquea la
-lectura de los Excel).
-
 ```bash
-# desde la carpeta del proyecto
-python -m http.server 8000
-# abre http://localhost:8000
+python -m http.server 8000      # y abre http://localhost:8000
 ```
 
----
+Validación de cálculos: `node tests/dashboard.test.cjs` (con
+`DATA_ROOT=<otra carpeta>` se prueba con otros datos, p. ej. una ejecución simulada).
 
 ## 📁 Estructura
 
 ```
-├── index.html            # App (riel de navegación, header, barra de filtros)
-├── .nojekyll             # requerido por GitHub Pages
-├── css/
-│   └── styles.css        # Sistema de diseño institucional (paleta morada)
+├── index.html            # App (riel de navegación, header, filtros)
+├── css/styles.css        # Sistema de diseño (tokens de color y tipografía)
 ├── js/
-│   ├── lib/xlsx.full.min.js   # SheetJS (lectura de .xlsx en el navegador)
-│   ├── data.js           # Carga y normalización de los Excel + filtros
-│   ├── metrics.js        # Reglas de negocio (cumplimiento, clientes, etc.)
-│   ├── charts.js         # Gráficos SVG (barras, líneas, dona, heatmap)
-│   └── app.js            # Routing, filtros globales y las 5 vistas
-├── assets/               # Logos institucionales
-├── data/                 # ← Excel de origen (reemplazar para actualizar)
-│   ├── ejecucion.xlsx
-│   ├── metas.xlsx
-│   ├── focalizados.xlsx
-│   ├── clientes.xlsx     (opcional · metas de clientes por programa/mes/tipo)
-│   ├── bd.xlsx           (opcional · histórico para clasificar clientes)
-│   ├── programado.xlsx   (opcional · fechas programadas de intervención)
-│   └── results_ice.xlsx  (opcional · diagnóstico ICE por Unidad Productiva, CdD-FEST)
-└── Dashboard POI 2026.dc.html   # Maqueta de referencia del diseño
+│   ├── lib/xlsx.full.min.js   # SheetJS
+│   ├── data.js           # Carga, validación por cabeceras y reparto de metas
+│   ├── metrics.js        # Reglas: corte, cuadro de control, clientes, etc.
+│   ├── charts.js         # Gráficos SVG
+│   └── app.js            # Vistas, filtros y exportación
+└── data/
+    ├── metas.xlsx        # Meta por tarea y mes (obligatorio)
+    ├── ejecucion.xlsx    # Ejecución (obligatorio; puede estar vacío = planificación)
+    ├── asignacion.xlsx   # % de la meta por especialista (opcional, recomendado)
+    ├── clientes.xlsx     # Meta de clientes por mes y tipo (opcional)
+    ├── focalizados.xlsx  # Empresas focalizadas 2027 (plantilla, completar)
+    └── bd.xlsx           # Histórico de atención AÑO/RUC (hoy: 2026)
 ```
 
 ## 📊 Modelo de datos (columnas exactas)
 
-* **ejecucion.xlsx**: `ID_ACTIVIDAD, FECHA, AÑO, MES, SEMANA, PROGRAMA,
-  ESPECIALISTA, RUC, RAZON_SOCIAL, TIPO_SERVICIO, TIPO_TAREA, COMPLEJIDAD
-  (Alta/Media/Baja), CANTIDAD, FUENTE` (opcional: `TEMA_ABORDADO`,
-  `TIPO_CONTRIBUYENTE` — alimenta la "Clasificación de cliente" en las
-  vistas Clientes/Especialistas)
-* **metas.xlsx**: `ID_META, AÑO, MES, PROGRAMA, ESPECIALISTA, TIPO_SERVICIO,
-  TIPO_TAREA, COMPLEJIDAD, META_CANTIDAD, META_FOCALIZADOS`
-* **focalizados.xlsx**: `RUC, RAZON_SOCIAL, TIPO`
+* **ejecucion.xlsx**: `ID_ACTIVIDAD, FECHA, AÑO, MES, PROGRAMA, ESPECIALISTA, RUC,
+  RAZON_SOCIAL, TIPO_CONTRIBUYENTE, TIPO_SERVICIO, TIPO_TAREA, TEMA_ABORDADO,
+  COMPLEJIDAD, CANTIDAD, FUENTE, COMPONENTE, FINANCIADO, FECHA_I`.
+  World Vision: `FINANCIADO = WORLDVISION`, `FECHA_I` = inicio, `FECHA` = fin.
+* **metas.xlsx**: `ID_META, AÑO, MES, PROGRAMA, ESPECIALISTA (puede ir vacío),
+  TIPO_SERVICIO, COMPLEJIDAD, TIPO_TAREA, META_CANTIDAD`
+* **asignacion.xlsx** (hoja `ASIGNACION`): `TIPO_SERVICIO, TIPO_TAREA, META_2027,
+  <ESPECIALISTA 1> … <ESPECIALISTA n>, TOTAL_%, ESTADO, BASE_PROPUESTA`
 * **clientes.xlsx**: `MES, PROGRAMA, TIPO (FOCALIZADO / NO FOCALIZADO), META`
-* **bd.xlsx**: `AÑO, RUC, RAZON_SOCIAL` (histórico de atención)
-* **programado.xlsx** (opcional · calendario de intervención): `ID_META, AÑO,
-  MES, FECHA_PROGRAMADA, PROGRAMA, ESPECIALISTA, TURNO (Mañana/Tarde),
-  TIPO_SERVICIO, COMPLEJIDAD, TEMÁTICA, TIPO_TAREA, META_CANTIDAD,
-  META_FOCALIZADOS, PUNTO_INTERVENCIÓN`. Para el planificador **CdD-FEST**
-  agrega además `RUC` (Unidad Productiva) y `COMPONENTE` (mismo código
-  decimal que en `ejecucion.xlsx`, p. ej. `3.4`) — sin estas dos columnas, lo
-  programado se ve en el calendario pero sin componente/color asignado.
-* **results_ice.xlsx** (opcional · diagnóstico ICE, CdD-FEST): `RUC, DNI,
-  Razón Social, ICE Global`, y por cada dimensión un par `(Puntaje)/(Nivel)`:
-  Gestión Productiva, Gestión Organizacional, Gestión Financiera y
-  Tributaria, Comercio Exterior, Marketing, Tecnología e Innovación,
-  Sostenibilidad, Ecosistema de Influencia/Entorno. Si a alguna dimensión le
-  falta el `(Puntaje)`, el tablero estima uno desde el `(Nivel)`
-  (Bajo=25, Medio=55, Alto=85) y lo marca con "≈" en el radar.
+* **focalizados.xlsx**: `RUC, RAZON_SOCIAL, TIPO`
+* **bd.xlsx**: `AÑO, RUC, RAZON_SOCIAL` (histórico; agregar años anteriores mejora
+  la clasificación de nuevos/reenganchados)
 
-> Las cabeceras se normalizan a MAYÚSCULAS y sin espacios al cargar, así que
-> pequeñas variaciones de formato no rompen el tablero. Los programas, meses y
-> especialistas de los filtros se derivan automáticamente de los datos.
->
-> Los **valores** de texto usados para agrupar (TIPO_TAREA, TIPO_SERVICIO,
-> PROGRAMA, COMPLEJIDAD) también se normalizan (`MT.normKey` en
-> `js/metrics.js`: recorta espacios y colapsa dobles espacios) antes de
-> usarse como categoría. Sin esto, una misma tarea escrita con un espacio de
-> más en `ejecucion.xlsx` o `metas.xlsx` generaba una **fila/categoría
-> duplicada** (invisible a simple vista, porque el navegador colapsa los
-> espacios al mostrar texto, pero eran claves distintas internamente) — por
-> ejemplo en el heatmap de "Cumplimiento por tarea y mes" o en los paneles
-> de Servicios.
+> Las cabeceras se validan aunque el archivo no tenga filas. Los nombres de
+> especialista deben escribirse igual en `asignacion.xlsx` y `ejecucion.xlsx`.
 
 ## 🧮 Reglas implementadas
 
-* Focalizados se cruzan **automáticamente por RUC** al cargar.
-* Productividad ponderada: Alta×3, Media×2, Baja×1.
-* Semáforo de cumplimiento: 🟩 ≥100 % · 🟨 80–99 % · 🟥 <80 %.
-* Clientes: **nuevo** = sin historial + complejidad media/alta; **reenganchado**
-  = atendido antes pero sin servicio 2023–2025 + media/alta; **recurrente** = resto.
-* AÑO/MES se re-derivan de FECHA cuando está disponible.
-* Un **único filtro global** (Programa · Mes · Especialista) alimenta todos los
-  indicadores, gráficos y tablas de todas las vistas — **excepto CdD-FEST**,
-  que tiene su propio selector de Unidad Productiva y oculta la barra de
-  filtros globales por no aplicarle.
-* **Especialistas**: por defecto muestra **"Todos"** (agregado de todo el
-  equipo); el desplegable "Ver especialista" permite acotar a uno solo. La
-  tabla "Meta de clientes atendidos por especialista" respeta esa elección
-  (si se filtra a uno, solo muestra su fila), pero el reparto de metas
-  (`Nesp`, meta focalizados/no focalizados) siempre se calcula sobre el
-  programa completo.
-* **Cumplimiento por tarea y mes** (heatmap): además del semáforo normal
-  (verde/ámbar/rojo por % de cumplimiento), una tarea/mes **ejecutada sin
-  tener meta programada** se muestra en una celda **gris neutra** con la
-  cantidad ejecutada ("N s/meta") en vez de desaparecer — antes esos
-  registros quedaban invisibles porque los ejes del heatmap solo se armaban
-  con las tareas que tenían meta.
-* **Servicios**: el panel "Meta vs Ejecutado por tarea" tiene un selector de
-  tipo de servicio ("Todos" o uno específico) y muestra las cantidades reales
-  (no solo %) ordenadas de mayor a menor por meta programada.
+* Cumplimiento a la fecha = ejecutado ÷ meta acumulada hasta el mes de corte.
+* Semáforo: 🟩 ≥100 % · 🟨 80–99 % · 🟧 50–79 % · 🟥 <50 %.
+* Servicios y tareas siempre en **orden de catálogo** (1.2, 1.3 … 8.9).
+* Focalizados se cruzan por RUC. Clientes: **nuevo** = sin historial + complejidad
+  media/alta; **reenganchado** = atendido antes pero sin servicio en los 3 años
+  previos (2024–2026) + media/alta; **recurrente** = resto.
+* Un **único filtro global** (Programa · Mes · Especialista) alimenta todas las
+  vistas excepto World Vision y CdD-FEST.
 
-## 🧭 Planificador CdD-FEST
+## 🎨 Identidad visual
+
+Ciruela institucional (`#4A1A4E` / `#7B2D80`), verde azulado complementario
+(`#0E7C86`) para clientes y dorado fibra (`#B07F22`) para focalizados; semáforo
+verde/ámbar/naranja/rojo. Tipografía **Inter** (texto, números tabulares) y
+**Plus Jakarta Sans** (títulos y cifras grandes). Los tokens están en `:root` de
+`css/styles.css` y en `COL` de `js/charts.js`.
+
+---
+
+## Módulos heredados de 2026
+
+### 🧭 Planificador CdD-FEST (se muestra solo si hay datos de CdD-FEST)
 
 Pestaña dedicada (independiente de los filtros globales, con su propio
 buscador de Unidad Productiva por RUC o razón social). Solo aparecen las UP
@@ -243,13 +251,7 @@ el conteo de cada botón cuentan **UP únicas, no servicios** — cada UP
 aparece una sola vez por actividad, con una columna **"Cant. servicios"**
 indicando cuántos servicios se consolidaron en esa fila.
 
-## 🎨 Identidad visual
-
-Paleta institucional morada (`#5C1F5C` / `#7A2A7A`) con azul complementario,
-tipografía IBM Plex y semáforo verde/ámbar/rojo. La guía de diseño es
-`Dashboard POI 2026.dc.html`.
-
-## Revisión de indicadores y experiencia de uso
+### Revisión de indicadores y experiencia de uso
 
 - “Todos” incluye todos los programas tanto para servicios como para clientes y sus metas.
 - Los clientes se cuentan por RUC no vacío. Un mismo cliente puede aparecer con varios especialistas; no se deben sumar esas filas para obtener el total institucional.

@@ -21,6 +21,27 @@
     return typeof v === "string" ? v.replace(/\s+/g, " ").trim() : v;
   }
 
+  // Orden de catálogo por código ("1.2. …" < "1.10. …" < "2.1. …"): las
+  // tareas y servicios se listan como en el POI y no por tamaño de meta.
+  function codeParts(v) {
+    const m = String(v == null ? "" : v).match(/^\s*(\d+)(?:\.(\d+))?/);
+    return m ? [Number(m[1]), m[2] != null ? Number(m[2]) : -1] : [999, 999];
+  }
+  function byCode(a, b) {
+    const x = codeParts(a), y = codeParts(b);
+    return x[0] - y[0] || x[1] - y[1] || String(a).localeCompare(String(b), "es");
+  }
+
+  // Mes de corte: último mes con ejecución registrada (null = planificación).
+  // Sirve para comparar lo ejecutado con la meta ACUMULADA a la fecha y no
+  // con la meta de todo el año (en marzo, 25 % anual puede ir "en meta").
+  function mesCorte(eje) {
+    let max = 0;
+    for (const r of eje) { const m = Number(r[X.MES]) || 0; if (m >= 1 && m <= 12 && (Number(r[X.CANTIDAD]) || 0) > 0 && m > max) max = m; }
+    return max || null;
+  }
+  const metaHasta = (met, corte) => corte ? met.filter((r) => Number(r[M.MES]) <= corte) : [];
+
   // ---- helpers de agregación ------------------------------------------------
   function sumBy(rows, keyCol, valCol) {
     const m = new Map();
@@ -123,6 +144,75 @@
     return df;
   }
 
+  // ---- Cuadro de control: servicio → tarea × mes ---------------------------
+  // Meta y ejecutado por mes para cada tarea, agrupado por tipo de servicio y
+  // en orden de catálogo. Incluye tareas con meta 0 que sí se ejecutaron.
+  function cuadroControl(eje, met) {
+    const svcDeTarea = new Map(), grupos = new Map();
+    const cell = () => ({ meta: 0, ejec: 0 });
+    const ensure = (svc, tarea) => {
+      svc = normKey(svc) || "Sin tipo de servicio"; tarea = normKey(tarea) || "Sin tarea";
+      if (!grupos.has(svc)) grupos.set(svc, new Map());
+      const g = grupos.get(svc);
+      if (!g.has(tarea)) g.set(tarea, { meses: Array.from({ length: 12 }, cell), meta: 0, ejec: 0 });
+      return g.get(tarea);
+    };
+    for (const r of met) {
+      const t = ensure(r[M.SERVICIO], r[M.TAREA]);
+      svcDeTarea.set(normKey(r[M.TAREA]), normKey(r[M.SERVICIO]));
+      const m = Number(r[M.MES]) || 0, v = Number(r[M.META]) || 0;
+      if (m >= 1 && m <= 12) t.meses[m - 1].meta += v;
+      t.meta += v;
+    }
+    for (const r of eje) {
+      // La ejecución usa el servicio de su propia fila; si falta, el de la meta.
+      const svc = r[X.SERVICIO] || svcDeTarea.get(normKey(r[X.TAREA]));
+      const t = ensure(svc, r[X.TAREA]);
+      const m = Number(r[X.MES]) || 0, v = Number(r[X.CANTIDAD]) || 0;
+      if (m >= 1 && m <= 12) t.meses[m - 1].ejec += v;
+      t.ejec += v;
+    }
+    const servicios = Array.from(grupos.keys()).sort(byCode).map((svc) => {
+      const tareas = Array.from(grupos.get(svc).entries()).sort((a, b) => byCode(a[0], b[0]))
+        .map(([tarea, o]) => Object.assign({ tarea }, o));
+      const meses = Array.from({ length: 12 }, (_, i) => ({
+        meta: tareas.reduce((n, t) => n + t.meses[i].meta, 0),
+        ejec: tareas.reduce((n, t) => n + t.meses[i].ejec, 0),
+      }));
+      return { servicio: svc, tareas, meses, meta: tareas.reduce((n, t) => n + t.meta, 0), ejec: tareas.reduce((n, t) => n + t.ejec, 0) };
+    });
+    const meses = Array.from({ length: 12 }, (_, i) => ({
+      meta: servicios.reduce((n, s) => n + s.meses[i].meta, 0),
+      ejec: servicios.reduce((n, s) => n + s.meses[i].ejec, 0),
+    }));
+    return { servicios, meses, meta: servicios.reduce((n, s) => n + s.meta, 0), ejec: servicios.reduce((n, s) => n + s.ejec, 0) };
+  }
+
+  // Meta por especialista y mes (para la vista Especialistas en planificación
+  // y para revisar el reparto de asignacion.xlsx).
+  function metaEspecialistaMes(met, eje) {
+    const map = new Map();
+    const ensure = (esp) => {
+      if (!map.has(esp)) map.set(esp, { esp, meses: Array.from({ length: 12 }, () => ({ meta: 0, ejec: 0 })), meta: 0, ejec: 0, tareas: new Set() });
+      return map.get(esp);
+    };
+    for (const r of met) {
+      const esp = normKey(r[M.ESPECIALISTA]) || CFG.SIN_ASIGNAR, v = Number(r[M.META]) || 0;
+      if (!v) continue;
+      const o = ensure(esp), m = Number(r[M.MES]) || 0;
+      if (m >= 1 && m <= 12) o.meses[m - 1].meta += v;
+      o.meta += v; o.tareas.add(normKey(r[M.TAREA]));
+    }
+    for (const r of eje || []) {
+      const esp = normKey(r[X.ESPECIALISTA]); if (!esp) continue;
+      const v = Number(r[X.CANTIDAD]) || 0, o = ensure(esp), m = Number(r[X.MES]) || 0;
+      if (m >= 1 && m <= 12) o.meses[m - 1].ejec += v;
+      o.ejec += v;
+    }
+    return Array.from(map.values()).map((o) => Object.assign(o, { nTareas: o.tareas.size }))
+      .sort((a, b) => (a.esp === CFG.SIN_ASIGNAR) - (b.esp === CFG.SIN_ASIGNAR) || b.meta - a.meta || a.esp.localeCompare(b.esp, "es"));
+  }
+
   // ---- Complejidad: conteo + productividad ponderada ------------------------
   function complejidadResumen(eje) {
     const conteo = { Alta: 0, Media: 0, Baja: 0 };
@@ -164,11 +254,8 @@
     addAxis(mMeta, tareaMetaTotal);
     addAxis(mEjec, tareaEjecTotal);
     const meses = Array.from(mesesSet).sort((a, b) => a - b);
-    // Orden: por meta total desc (como antes); las tareas "solo ejecución"
-    // (meta total 0) caen al final, desempatadas por lo ejecutado.
-    const tareaList = Array.from(tareas).sort((a, b) =>
-      (tareaMetaTotal.get(b) || 0) - (tareaMetaTotal.get(a) || 0) ||
-      (tareaEjecTotal.get(b) || 0) - (tareaEjecTotal.get(a) || 0));
+    // Orden de catálogo (1.2, 1.3 … 8.9), igual que el cuadro de control.
+    const tareaList = Array.from(tareas).sort(byCode);
     const rows = tareaList.map((t) => {
       const cells = meses.map((mes) => {
         const meta = mMeta.get(metaKey(t, mes)) || 0;
@@ -180,7 +267,7 @@
       const ejecTotal = tareaEjecTotal.get(t) || 0;
       return { label: t, metaTotal, ejecTotal, cells };
     });
-    return { meses: meses.map((m) => CFG.MESES_ES[m] || m), rows };
+    return { meses: meses.map((m) => CFG.MESES_ES[m] || m), mesesNum: meses, rows };
   }
 
   // ---- Clientes -------------------------------------------------------------
@@ -204,7 +291,7 @@
       o.tipoContribCount.set(tc, (o.tipoContribCount.get(tc) || 0) + 1);
     }
 
-    // RUCs con complejidad Media/Alta en 2026
+    // RUCs con complejidad Media/Alta en el año en curso
     const rucsMediaAlta = new Set();
     for (const r of eje)
       if (r[X.COMPLEJIDAD] === "Media" || r[X.COMPLEJIDAD] === "Alta")
@@ -212,7 +299,7 @@
 
     let rucsNuevos = new Set(), rucsReeng = new Set();
     if (bd && bd.length) {
-      const ANIO_LIMITE = CFG.ANIO_ACTUAL - CFG.ANIOS_SIN_SERVICIO; // 2023
+      const ANIO_LIMITE = CFG.ANIO_ACTUAL - CFG.ANIOS_SIN_SERVICIO; // 2027 → 2024
       const historicos = new Set(bd.map((b) => b.RUC));
       const recientes = new Set(bd.filter((b) => b.ANIO >= ANIO_LIMITE).map((b) => b.RUC));
       for (const ruc of rucsMediaAlta) {
@@ -791,7 +878,7 @@
   }
 
   global.POI.metrics = {
-    pct, kpis, metaVsEjec, balanceServicios, tendenciaMensual, rankingEspecialistas,
+    pct, kpis, metaVsEjec, byCode, mesCorte, metaHasta, cuadroControl, metaEspecialistaMes, balanceServicios, tendenciaMensual, rankingEspecialistas,
     complejidadResumen, heatmapCumplimiento, clientesResumen,
     clientesNuevosPorMes, kpisClientes, clientesMetaPorMes,
     clientesMetaEspecialistas, cddFestMetaEspecialistas, cddFestMetaPorEspecialista,

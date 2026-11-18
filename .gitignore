@@ -10,3 +10,6 @@ Thumbs.db
 
 # IMPORTANTE: los Excel de data/ SÍ deben publicarse en GitHub Pages.
 # No añadir *.xlsx a este archivo.
+
+# Archivos temporales de Excel abiertos
+~$*

@@ -53,21 +53,31 @@
 
   // `navLabel` = rótulo corto visible debajo del ícono en el riel;
   // `label`/`sub` (más largos) se usan como subtítulo del topbar y tooltip.
-  const NAV = [
-    { id: "ejecutivo", ico: I.grid, navLabel: "Resumen", label: "Resumen ejecutivo", sub: "Meta vs Ejecución · visión general" },
-    { id: "especialistas", ico: I.user, navLabel: "Especialistas", label: "Especialistas", sub: "Cumplimiento individual · tareas por mes" },
+  // Orden: de lo general a lo particular (resumen → servicios → personas →
+  // clientes → financiador). CdD-FEST y Programas solo aparecen si los datos
+  // los traen (en 2027 el POI es el único programa con metas).
+  const NAV_ALL = [
+    { id: "ejecutivo", ico: I.grid, navLabel: "Resumen", label: "Resumen ejecutivo", sub: "Cuadro de ejecución · meta vs ejecutado" },
+    { id: "servicios", ico: I.puzzle, navLabel: "Servicios", label: "Servicios", sub: "Avance y cobertura por tipo de servicio y tarea" },
+    { id: "especialistas", ico: I.user, navLabel: "Especialistas", label: "Especialistas", sub: "Metas y avance por especialista y mes" },
     { id: "clientes", ico: I.building, navLabel: "Clientes", label: "Clientes", sub: "Nuevos · reenganchados · focalizados" },
-    { id: "servicios", ico: I.puzzle, navLabel: "Servicios", label: "Servicios", sub: "Estructura y cumplimiento de servicios" },
     { id: "calendario", ico: I.calendar, navLabel: "World Vision", label: "Intervenciones World Vision", sub: "Servicios POI financiados · resumen, RUC y especialistas" },
-    { id: "cddfest", ico: I.compass, navLabel: "CdD-FEST", label: "CdD-FEST", sub: "Radar ICE · orden recomendado · línea de tiempo por componente" },
     { id: "programas", ico: I.folder, navLabel: "Programas", label: "Programas", sub: "Servicios y metas por programa" },
+    { id: "cddfest", ico: I.compass, navLabel: "CdD-FEST", label: "CdD-FEST", sub: "Radar ICE · orden recomendado · línea de tiempo por componente" },
   ];
+  let NAV = NAV_ALL;
+  function navDisponible() {
+    const progs = new Set([...STORE.ejecucion.map((r) => r[CFG.X.PROGRAMA]), ...STORE.metas.map((r) => r[CFG.M.PROGRAMA])]
+      .filter((v) => v != null && String(v).trim() !== ""));
+    return NAV_ALL.filter((n) => n.id === "cddfest" ? progs.has("CdD-FEST")
+      : n.id === "programas" ? progs.size > 1 : true);
+  }
 
-  const PROG_COLORS = [COL.accent, COL.blue, COL.mid, COL.purple, COL.soft, "#C77DC7", "#5FA0E0"];
+  const PROG_COLORS = [COL.accent, COL.blue, COL.gold, COL.mid, COL.purple, "#4FA3A9", COL.soft];
   const colorFor = (i) => PROG_COLORS[i % PROG_COLORS.length];
   // Paleta categórica para los puntos de intervención (calendario programado)
-  const PUNTO_COLORS = ["#7A2A7A", "#2E5FD4", "#1F9D6B", "#E0A82E", "#C0392B", "#9B4D9B",
-    "#0FA3A3", "#D2691E", "#5FA0E0", "#C77DC7", "#6B8E23", "#B0338A", "#3D7A5C", "#8A5A2B"];
+  const PUNTO_COLORS = ["#7B2D80", "#0E7C86", "#B07F22", "#178A5C", "#C2362B", "#A35AA6",
+    "#4FA3A9", "#D4691A", "#5C7FBF", "#C77DC7", "#6B8E23", "#B0338A", "#3D7A5C", "#8A5A2B"];
   // Paleta fija por componente C1-C5 (CdD-FEST): C1 línea base, C2 azul,
   // C3 morado institucional, C4 ámbar, C5 verde (crecimiento/exportación).
   const COMPONENTE_COLORS = { 1: "#0B1B33", 2: COL.blue, 3: COL.purple, 4: "#E0A82E", 5: CH.SEM.verde };
@@ -260,113 +270,309 @@
     return `<div class="empty" style="min-height:280px">${esc(msg || "No hay datos para los filtros seleccionados.")}</div>`;
   }
 
+  // ---- Contexto de avance (corte) ------------------------------------------
+  // corte = último mes con ejecución. Sin ejecución → fase de planificación:
+  // se muestran metas, sin semáforos (no tendría sentido marcar "en riesgo").
+  function avanceCtx(eje, met) {
+    const corte = MT.mesCorte(eje);
+    const metaAnual = MT.sumCol(met, CFG.M.META);
+    const metaFecha = corte ? MT.sumCol(MT.metaHasta(met, corte), CFG.M.META) : 0;
+    const ejec = MT.sumCol(eje, CFG.X.CANTIDAD);
+    return {
+      corte, planificacion: !corte, metaAnual, metaFecha, ejec,
+      pctFecha: metaFecha > 0 ? MT.pct(metaFecha, ejec) : null,
+      pctAnual: metaAnual > 0 ? MT.pct(metaAnual, ejec) : null,
+      corteTxt: corte ? `Ene–${CFG.MESES_ES[corte]}` : "",
+    };
+  }
+
+  // % de la meta (filtrada) que ya tiene especialista asignado.
+  function asignacionCtx(met) {
+    const total = MT.sumCol(met, CFG.M.META);
+    const sin = MT.sumCol(met.filter((r) => r[CFG.M.ESPECIALISTA] === CFG.SIN_ASIGNAR), CFG.M.META);
+    const esps = new Set(met.filter((r) => (Number(r[CFG.M.META]) || 0) > 0 && r[CFG.M.ESPECIALISTA] && r[CFG.M.ESPECIALISTA] !== CFG.SIN_ASIGNAR).map((r) => r[CFG.M.ESPECIALISTA]));
+    return { total, sin, asignado: total - sin, pct: total > 0 ? MT.pct(total, total - sin) : 0, nEsp: esps.size };
+  }
+
+  function planBanner(ctx, asig) {
+    if (!ctx.planificacion) return "";
+    const asigTxt = asig ? (asig.sin > 0.05
+      ? `<b>${fmt1(asig.pct)}%</b> de la meta ya tiene especialista; ${fmt1(asig.sin)} servicios siguen <b>sin asignar</b>.`
+      : `La meta está repartida entre <b>${fmt(asig.nEsp)}</b> especialistas (reparto de <code>asignacion.xlsx</code>).`) : "";
+    return `<div class="plan-banner" role="note">
+      <span class="plan-ico">${svgIco(I.calendar)}</span>
+      <div><strong>Fase de planificación ${CFG.ANIO_ACTUAL}</strong>
+      <p>Aún no hay ejecución registrada: se muestran las metas programadas. El avance y los semáforos se activan con la primera carga de <code>data/ejecucion.xlsx</code>. ${asigTxt}</p></div></div>`;
+  }
+
+  // Celda de avance según contexto: en planificación → "Programado".
+  function avanceCell(meta, ejec, ctx) {
+    if (!(meta > 0)) return ejec > 0 ? `<span class="badge neutral"><i></i>Sin meta</span>` : `<span class="muted">—</span>`;
+    if (ctx.planificacion) return `<span class="badge plan"><i></i>Programado</span>`;
+    return cellBar(MT.pct(meta, ejec));
+  }
+  function estadoCell(meta, ejec, ctx) {
+    if (!(meta > 0)) return ejec > 0 ? `<span class="badge neutral"><i></i>Sin meta</span>` : `<span class="muted">—</span>`;
+    if (ctx.planificacion) return `<span class="badge plan"><i></i>Planificado</span>`;
+    return statusBadge(MT.pct(meta, ejec));
+  }
+
+  // ---- CUADRO DE CONTROL: servicio → tarea × mes ---------------------------
+  // Cada celda: ejecutado / meta del mes. Meses posteriores al corte (o todos,
+  // en planificación) muestran solo la meta en gris. Clic en un servicio
+  // pliega o despliega sus tareas.
+  function cuadroControlHtml(cc, ctx) {
+    if (!cc.servicios.length) return CH.empty("Sin metas para los filtros seleccionados");
+    const meses = Array.from({ length: 12 }, (_, i) => i + 1);
+    const num = (v) => (Math.abs(v - Math.round(v)) < 0.05 ? fmt(v) : fmt1(v));
+    const cell = (c, mes) => {
+      if (!(c.meta > 0) && !(c.ejec > 0)) return `<td class="cc-c cc-empty">·</td>`;
+      const futuro = !ctx.corte || mes > ctx.corte;
+      if (futuro && !(c.ejec > 0)) return `<td class="cc-c cc-plan" title="Meta ${num(c.meta)}">${num(c.meta)}</td>`;
+      if (!(c.meta > 0)) return `<td class="cc-c cc-nometa" title="Ejecutado sin meta">${num(c.ejec)}<small>s/m</small></td>`;
+      const p = MT.pct(c.meta, c.ejec), tone = estadoTone[global.POI.semaforo(p)];
+      return `<td class="cc-c cc-${tone}" title="Ejecutado ${num(c.ejec)} de ${num(c.meta)} · ${fmt1(p)}%"><b>${num(c.ejec)}</b><small>/${num(c.meta)}</small></td>`;
+    };
+    const totCells = (o) => {
+      const metaF = ctx.corte ? o.meses.slice(0, ctx.corte).reduce((n, c) => n + c.meta, 0) : 0;
+      const av = ctx.planificacion ? `<span class="muted">—</span>`
+        : metaF > 0 ? `<span class="cc-pct" style="color:${CH.semColor(MT.pct(metaF, o.ejec))}">${fmt1(MT.pct(metaF, o.ejec))}%</span>` : `<span class="muted">s/m</span>`;
+      if (ctx.planificacion) return `<td class="cc-t">${num(o.meta)}</td>`;
+      return `<td class="cc-t"><b>${num(o.ejec)}</b><small>/${num(o.meta)}</small></td><td class="cc-t">${av}</td>`;
+    };
+    const body = cc.servicios.map((s, si) => {
+      const head = `<tr class="cc-svc" data-svc="${si}" tabindex="0" aria-expanded="true">
+        <th scope="row"><span class="cc-caret">▾</span>${esc(s.servicio)}<span class="cc-n">${s.tareas.length} tarea${s.tareas.length === 1 ? "" : "s"}</span></th>
+        ${meses.map((m) => cell(s.meses[m - 1], m)).join("")}${totCells(s)}</tr>`;
+      const tareas = s.tareas.map((t) => `<tr class="cc-task" data-parent="${si}">
+        <th scope="row" title="${esc(t.tarea)}">${esc(t.tarea)}</th>
+        ${meses.map((m) => cell(t.meses[m - 1], m)).join("")}${totCells(t)}</tr>`).join("");
+      return head + tareas;
+    }).join("");
+    const foot = `<tr class="cc-total"><th scope="row">Total</th>${meses.map((m) => cell(cc.meses[m - 1], m)).join("")}${totCells(cc)}</tr>`;
+    return `<div class="cc-wrap"><table class="cc">
+      <thead><tr><th scope="col">Tipo de servicio / tarea</th>${meses.map((m) => `<th scope="col" class="${ctx.corte && m <= ctx.corte ? "cc-done" : ""}">${CFG.MESES_ES[m]}</th>`).join("")}
+      ${ctx.planificacion ? `<th scope="col">Meta anual</th>` : `<th scope="col">Ejec / meta</th><th scope="col">Avance a la fecha</th>`}</tr></thead>
+      <tbody>${body}</tbody><tfoot>${foot}</tfoot></table></div>
+      <div class="cc-legend">${ctx.planificacion
+        ? `<span><i class="cc-plan"></i>Meta programada del mes</span>`
+        : `<span><i class="cc-green"></i>≥100%</span><span><i class="cc-amber"></i>80–99%</span><span><i class="cc-orange"></i>50–79%</span><span><i class="cc-red"></i>&lt;50%</span><span><i class="cc-plan"></i>Mes por ejecutar (meta)</span><span><i class="cc-nometa"></i>Ejecutado sin meta</span>`}
+        <span class="muted">Clic en un tipo de servicio para plegar/desplegar sus tareas.</span></div>`;
+  }
+  function wireCuadroControl(root) {
+    (root || document).querySelectorAll(".cc-svc").forEach((tr) => {
+      const toggle = () => {
+        const open = tr.getAttribute("aria-expanded") !== "true";
+        tr.setAttribute("aria-expanded", String(open));
+        tr.closest("tbody").querySelectorAll(`.cc-task[data-parent="${tr.dataset.svc}"]`).forEach((t) => { t.hidden = !open; });
+      };
+      tr.addEventListener("click", toggle);
+      tr.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+    });
+    const all = document.getElementById("cc-toggle-all");
+    if (all) all.addEventListener("click", () => {
+      const rows = document.querySelectorAll(".cc-svc");
+      const anyOpen = Array.from(rows).some((r) => r.getAttribute("aria-expanded") === "true");
+      rows.forEach((r) => { if ((r.getAttribute("aria-expanded") === "true") === anyOpen) r.click(); });
+      all.textContent = anyOpen ? "Ver tareas" : "Solo servicios";
+    });
+  }
+  function cuadroExport(cc, filename) {
+    const cols = ["Tipo de servicio", "Tarea"];
+    for (let m = 1; m <= 12; m++) cols.push(`${CFG.MESES_ES[m]} meta`, `${CFG.MESES_ES[m]} ejecutado`);
+    cols.push("Meta anual", "Ejecutado");
+    const rows = [];
+    cc.servicios.forEach((s) => s.tareas.forEach((t) => {
+      const r = [s.servicio, t.tarea];
+      t.meses.forEach((c) => r.push(Math.round(c.meta * 10) / 10, Math.round(c.ejec * 10) / 10));
+      r.push(Math.round(t.meta * 10) / 10, Math.round(t.ejec * 10) / 10);
+      rows.push(r);
+    }));
+    return { filename, columns: cols, rows };
+  }
+
+  // Barras horizontales de meta (planificación) o de avance (ejecución).
+  function svcList(rows, ctx) {
+    if (!rows.length) return CH.empty();
+    const maxMeta = Math.max(1, ...rows.map((r) => r.Meta));
+    const total = rows.reduce((n, r) => n + r.Meta, 0);
+    return `<div class="prog-list">${rows.map((r) => {
+      if (ctx.planificacion) {
+        return `<div class="prog-row">
+          <div class="lab"><span class="n" title="${esc(r.Dim)}">${esc(truncate(r.Dim, 40))}</span><span class="p">${fmt(r.Meta)}</span></div>
+          <div class="muted prog-detail">${total > 0 ? fmt1(r.Meta / total * 100) : 0}% de la meta anual</div>
+          <div class="prog-track"><span style="width:${(r.Meta / maxMeta * 100).toFixed(1)}%;background:var(--accent)"></span></div></div>`;
+      }
+      const c = CH.semColor(r.Cumplimiento);
+      return `<div class="prog-row">
+        <div class="lab"><span class="n" title="${esc(r.Dim)}">${esc(truncate(r.Dim, 40))}</span><span class="p" style="color:${c}">${r.Meta > 0 ? fmt1(r.Cumplimiento) + "%" : "Sin meta"}</span></div>
+        <div class="muted prog-detail">${fmt(r.Ejecutado)} ejecutados · meta a la fecha ${fmt1(r.Meta)}</div>
+        <div class="prog-track"><span style="width:${Math.max(0, Math.min(r.Cumplimiento, 100))}%;background:${c}"></span></div></div>`;
+    }).join("")}</div>`;
+  }
+
+  function mensualPanel(tm, ctx, title) {
+    if (ctx.planificacion) {
+      return panel(title, "Meta programada por mes", CH.barsVertical(tm.map((r) => ({ label: r.Mes, a: r.Meta, b: 0 })), { stacked: true, colA: COL.soft, nameA: "Meta", nameB: "", capLimit: 12 }),
+        `<div class="chart-legend"><span><i style="background:${COL.soft}"></i>Meta</span></div>`);
+    }
+    return panel(title, "Meta vs ejecutado por mes", CH.barsVertical(tm.map((r) => ({ label: r.Mes, a: r.Ejecutado, b: r.Meta })), { nameA: "Ejecutado", nameB: "Meta", capLimit: 12 }), legendMetaEjec);
+  }
+
   // ---- EJECUTIVO ------------------------------------------------------------
   function viewEjecutivo() {
     const { eje, met } = currentData();
     const k = MT.kpis(eje, met);
     if (k.meta === 0 && k.ejecutado === 0) return noData();
+    const ctx = avanceCtx(eje, met);
+    const asig = asignacionCtx(met);
     const metCli = metasClientesComparables(eje);
     const kc = MT.kpisClientes(eje, metCli);
-    const cx = MT.complejidadResumen(eje);
-    const rk = MT.rankingEspecialistas(eje, met);
-    const enRiesgo = rk.filter((r) => r.Meta > 0 && r.Cumplimiento < CFG.SEMAFORO_AMARILLO).length;
-    const porProg = MT.metaVsEjec(eje, met, CFG.X.PROGRAMA, CFG.M.PROGRAMA);
-    porProg.sort((a, b) => b.Cumplimiento - a.Cumplimiento);
-    const tm = MT.tendenciaMensual(eje, met);
-
-    // estado de cumplimiento por especialista (semáforo de 4 niveles)
-    const conMeta = rk.filter((r) => r.Meta > 0);
+    // Avance de clientes contra la meta acumulada al mes de corte.
+    const kcF = ctx.planificacion ? kc : MT.kpisClientes(eje, metCli.filter((r) => r.MES <= ctx.corte));
+    const metFecha = ctx.planificacion ? met : MT.metaHasta(met, ctx.corte);
+    const rk = especialistasTabla(eje, met, ctx);
+    const conMeta = rk.filter((r) => r.MetaFecha > 0 && r.Dim !== CFG.SIN_ASIGNAR);
     const semCounts = { verde: 0, amarillo: 0, naranja: 0, rojo: 0 };
     conMeta.forEach((r) => { semCounts[global.POI.semaforo(r.Cumplimiento)]++; });
-    const enMeta = semCounts.verde;
     const estadoSegs = [
       { label: "En meta", value: semCounts.verde, color: CH.SEM.verde },
       { label: "En proceso", value: semCounts.amarillo, color: CH.SEM.amarillo },
       { label: "En alerta", value: semCounts.naranja, color: CH.SEM.naranja },
       { label: "En riesgo", value: semCounts.rojo, color: CH.SEM.rojo },
     ];
-
-    // export
-    lastExport = {
-      filename: "resumen_especialistas.csv",
-      columns: ["Especialista", "Programado", "Ejecutado", "Cumplimiento %", "Clientes focalizados", "Clientes no focalizados"],
-      rows: rk.map((r) => [r.Dim, Math.round(r.Meta), Math.round(r.Ejecutado), r.Cumplimiento, r.ClientesFoc, r.ClientesNoFoc])
-    };
+    const porServ = MT.metaVsEjec(eje, metFecha, CFG.X.SERVICIO, CFG.M.SERVICIO).sort((a, b) => MT.byCode(a.Dim, b.Dim));
+    const tm = MT.tendenciaMensual(eje, met);
+    const cc = MT.cuadroControl(eje, met);
+    lastExport = cuadroExport(cc, `cuadro_control_${CFG.ANIO_ACTUAL}.csv`);
 
     const metaNoFoc = Math.max(kc.meta_clientes - kc.meta_focalizados, 0);
     const kpis = [
       kpiCard({
-        name: "Cumplimiento de servicios", icon: I.target, tone: "purple",
-        value: k.meta > 0 ? fmt1(k.cumplimiento) : "—", unit: k.meta > 0 ? "%" : "", bar: k.cumplimiento, barColor: CH.semColor(k.cumplimiento),
-        foot: k.meta > 0 ? `<span class="tag ${tagCls(k.cumplimiento)}">${estadoTxt[global.POI.semaforo(k.cumplimiento)]}</span><span class="muted">ejecutado ÷ meta seleccionada</span>` : `<span class="muted">Sin meta para comparar</span>`
+        name: ctx.planificacion ? "Meta anual de servicios" : "Cumplimiento a la fecha", icon: I.target, tone: "purple",
+        value: ctx.planificacion ? fmt(ctx.metaAnual) : (ctx.pctFecha != null ? fmt1(ctx.pctFecha) : "—"),
+        unit: ctx.planificacion || ctx.pctFecha == null ? "" : "%",
+        bar: ctx.planificacion ? null : ctx.pctFecha, barColor: CH.semColor(ctx.pctFecha || 0),
+        foot: ctx.planificacion
+          ? `<span class="muted">${fmt(cc.servicios.length)} tipos de servicio · ${fmt(cc.servicios.reduce((n, s) => n + s.tareas.filter((t) => t.meta > 0).length, 0))} tareas con meta</span>`
+          : `<span class="tag ${tagCls(ctx.pctFecha || 0)}">${estadoTxt[global.POI.semaforo(ctx.pctFecha || 0)]}</span><span class="muted">vs meta ${ctx.corteTxt} (${fmt1(ctx.metaFecha)})</span>`
       }),
       kpiCard({
         name: "Servicios ejecutados", icon: I.check, tone: "purple",
-        value: fmt(k.ejecutado), bar: k.cumplimiento,
-        foot: `<span class="muted">Meta de servicios: <span class="strong">${fmt(k.meta)}</span></span>`
+        value: fmt(ctx.ejec), bar: ctx.pctAnual,
+        foot: ctx.planificacion ? `<span class="muted">Aún sin ejecución registrada</span>`
+          : `<span class="muted">${fmt1(ctx.pctAnual || 0)}% de la meta anual (<span class="strong">${fmt(ctx.metaAnual)}</span>)</span>`
       }),
       kpiCard({
         name: "Clientes atendidos", icon: I.building, tone: "blue",
-        value: fmt(kc.ejec_clientes), bar: kc.meta_clientes ? kc.pct_clientes : null, barColor: CH.semColor(kc.pct_clientes),
+        value: fmt(kc.ejec_clientes), bar: kcF.meta_clientes && !ctx.planificacion ? kcF.pct_clientes : null, barColor: CH.semColor(kcF.pct_clientes),
         foot: kc.meta_clientes
-          ? `<span class="tag ${tagCls(kc.pct_clientes)}">${fmt1(kc.pct_clientes)}%</span><span class="muted">Meta <span class="strong">${fmt(kc.meta_clientes)}</span> · focalizados ${fmt(kc.meta_focalizados)} / no focalizados ${fmt(metaNoFoc)}</span>`
+          ? (ctx.planificacion
+            ? `<span class="muted">Meta <span class="strong">${fmt(kc.meta_clientes)}</span> · focalizados ${fmt(kc.meta_focalizados)} · no focalizados ${fmt(metaNoFoc)}</span>`
+            : `<span class="tag ${tagCls(kcF.pct_clientes)}">${fmt1(kcF.pct_clientes)}%</span><span class="muted">de la meta ${ctx.corteTxt} (${fmt(kcF.meta_clientes)}) · anual ${fmt(kc.meta_clientes)}</span>`)
           : `<span class="muted">clientes únicos por RUC</span>`
       }),
       kpiCard({
-        name: "Clientes focalizados", icon: I.pin, tone: "purple",
-        value: fmt(kc.ejec_focalizados), bar: kc.meta_focalizados ? kc.pct_focalizados : null, barColor: CH.semColor(kc.pct_focalizados),
+        name: "Clientes focalizados", icon: I.pin, tone: "gold",
+        value: fmt(kc.ejec_focalizados), bar: kcF.meta_focalizados && !ctx.planificacion ? kcF.pct_focalizados : null, barColor: CH.semColor(kcF.pct_focalizados),
         foot: kc.meta_focalizados
-          ? `<span class="tag ${tagCls(kc.pct_focalizados)}">${fmt1(kc.pct_focalizados)}%</span><span class="muted">Meta <span class="strong">${fmt(kc.meta_focalizados)}</span> focalizadas</span>`
+          ? (ctx.planificacion
+            ? `<span class="muted">Meta <span class="strong">${fmt(kc.meta_focalizados)}</span> empresas focalizadas</span>`
+            : `<span class="tag ${tagCls(kcF.pct_focalizados)}">${fmt1(kcF.pct_focalizados)}%</span><span class="muted">de la meta ${ctx.corteTxt} (${fmt(kcF.meta_focalizados)}) · anual ${fmt(kc.meta_focalizados)}</span>`)
           : `<span class="muted">empresas focalizadas atendidas</span>`
       }),
-      kpiCard({
-        name: "Especialistas cumpliendo", icon: I.check, tone: "green",
-        value: fmt(enMeta),
-        foot: `<span class="muted">de <span class="strong">${fmt(conMeta.length)}</span> con meta · según lo programado</span>`
-      }),
+      ctx.planificacion
+        ? kpiCard({
+          name: "Meta asignada a especialistas", icon: I.user, tone: asig.sin > 0.05 ? "amber" : "green",
+          value: fmt1(asig.pct), unit: "%", bar: asig.pct, barColor: asig.sin > 0.05 ? CH.SEM.amarillo : CH.SEM.verde,
+          foot: `<span class="muted"><span class="strong">${fmt(asig.nEsp)}</span> especialistas${asig.sin > 0.05 ? ` · ${fmt1(asig.sin)} sin asignar` : ""}</span>`
+        })
+        : kpiCard({
+          name: "Especialistas en meta", icon: I.user, tone: "green", value: fmt(semCounts.verde),
+          foot: `<span class="muted">de <span class="strong">${fmt(conMeta.length)}</span> con meta a ${CFG.MESES_NOMBRE[ctx.corte].toLowerCase()}</span>`
+        }),
     ].join("");
 
+    const espPanel = ctx.planificacion
+      ? panel("Meta anual por especialista", "Según el reparto de asignacion.xlsx",
+        CH.barsSimple(rk.filter((r) => r.Meta > 0).slice(0, 12).map((r) => ({ label: r.Dim, value: r.Meta, color: r.Dim === CFG.SIN_ASIGNAR ? CH.SEM.amarillo : COL.accent })), { gutter: 150, rowH: 24 }))
+      : panel("Estado de especialistas", `Avance vs meta ${ctx.corteTxt}`, CH.donut(estadoSegs, fmt(conMeta.length), "con meta") + CH.legendList(estadoSegs));
+
     return `
-      ${sectionHead("Indicadores clave", "Servicios y clientes de los programas seleccionados")}
+      ${planBanner(ctx, asig)}
+      ${sectionHead("Indicadores clave", ctx.planificacion ? `Metas programadas ${CFG.ANIO_ACTUAL}` : `Avance acumulado ${ctx.corteTxt} ${CFG.ANIO_ACTUAL}`)}
       <section class="grid grid-kpi-5">${kpis}</section>
+      <section class="card cc-card">
+        <div class="card-head"><div><h3>Cuadro de ejecución por servicio</h3>
+          <div class="sub">${ctx.planificacion ? "Meta programada por tipo de servicio, tarea y mes" : "Ejecutado / meta por tipo de servicio, tarea y mes · semáforo hasta " + CFG.MESES_NOMBRE[ctx.corte].toLowerCase()}</div></div>
+          <button type="button" class="btn btn-ghost btn-sm" id="cc-toggle-all">Solo servicios</button></div>
+        ${cuadroControlHtml(cc, ctx)}
+      </section>
       <section class="grid g-2-5">
-        ${panel("Avance físico mensual", "Meta vs Ejecutado por mes", CH.barsVertical(tm.map((r) => ({ label: r.Mes, a: r.Ejecutado, b: r.Meta })), { nameA: "Ejecutado", nameB: "Meta", capLimit: 12 }), legendMetaEjec)}
-        ${panel("Avance por programa", "% de cumplimiento de metas", progList(porProg))}
-        ${panel("Estado de cumplimiento", "Especialistas por semáforo",
-      CH.donut(estadoSegs, fmt(conMeta.length), "con meta") + CH.legendList(estadoSegs))}
+        ${mensualPanel(tm, ctx, "Avance físico mensual")}
+        ${panel(ctx.planificacion ? "Meta por tipo de servicio" : "Avance por tipo de servicio", ctx.planificacion ? "Peso de cada servicio en la meta anual" : `Ejecutado vs meta ${ctx.corteTxt}`, svcList(porServ, ctx))}
+        ${espPanel}
       </section>
       <section class="card tablecard" id="tbl-ejec"></section>`;
   }
 
-  function progList(rows) {
-    if (!rows.length) return CH.empty();
-    return `<div class="prog-list">${rows.map((r) => {
-      const c = CH.semColor(r.Cumplimiento);
-      return `<div class="prog-row">
-        <div class="lab"><span class="n">${esc(truncate(r.Dim, 34))}</span><span class="p" style="color:${c}">${r.Meta > 0 ? fmt1(r.Cumplimiento) + "%" : "Sin meta"}</span></div>
-        <div class="muted prog-detail">${fmt(r.Ejecutado)} servicios ejecutados · meta ${fmt(r.Meta)}</div>
-        <div class="prog-track"><span style="width:${Math.max(0, Math.min(r.Cumplimiento, 100))}%;background:${c}"></span></div>
-      </div>`;
-    }).join("")}</div>`;
+  // Filas por especialista: meta anual, meta a la fecha y ejecutado.
+  function especialistasTabla(eje, met, ctx) {
+    const anual = MT.sumBy(met, CFG.M.ESPECIALISTA, CFG.M.META);
+    const fecha = MT.sumBy(ctx.planificacion ? [] : MT.metaHasta(met, ctx.corte), CFG.M.ESPECIALISTA, CFG.M.META);
+    const ejec = MT.sumBy(eje, CFG.X.ESPECIALISTA, CFG.X.CANTIDAD);
+    const cliFoc = MT.uniqueCountBy(eje.filter((r) => r.ES_FOCALIZADO), CFG.X.ESPECIALISTA, CFG.X.RUC);
+    const cliNoFoc = MT.uniqueCountBy(eje.filter((r) => !r.ES_FOCALIZADO), CFG.X.ESPECIALISTA, CFG.X.RUC);
+    const names = new Set([...anual.keys(), ...ejec.keys()]);
+    const rows = [];
+    for (const d of names) {
+      if (d == null || String(d).trim() === "") continue;
+      const Meta = anual.get(d) || 0, MetaFecha = fecha.get(d) || 0, Ejecutado = ejec.get(d) || 0;
+      if (!Meta && !Ejecutado) continue;
+      rows.push({ Dim: d, Meta, MetaFecha, Ejecutado, Cumplimiento: MT.pct(MetaFecha, Ejecutado),
+        ClientesFoc: cliFoc.get(d) || 0, ClientesNoFoc: cliNoFoc.get(d) || 0 });
+    }
+    rows.sort((a, b) => (a.Dim === CFG.SIN_ASIGNAR) - (b.Dim === CFG.SIN_ASIGNAR) ||
+      (ctx.planificacion ? b.Meta - a.Meta : b.Ejecutado - a.Ejecutado) || String(a.Dim).localeCompare(String(b.Dim), "es"));
+    return rows;
+  }
+
+  function espNombre(d) {
+    return d === CFG.SIN_ASIGNAR ? `<span class="badge amber"><i></i>Sin asignar</span>` : esc(d);
   }
 
   function afterEjecutivo() {
+    wireCuadroControl();
     const { eje, met } = currentData();
-    const rk = MT.rankingEspecialistas(eje, met);
+    const ctx = avanceCtx(eje, met);
+    const rk = especialistasTabla(eje, met, ctx);
+    const totalMeta = rk.reduce((n, r) => n + r.Meta, 0);
     const el = document.getElementById("tbl-ejec");
     if (!el) return;
+    const n1 = (v) => (Math.abs(v - Math.round(v)) < 0.05 ? fmt(v) : fmt1(v));
     mountTable(el, {
-      title: "Detalle por especialista", sub: `${rk.length} especialistas · ordenados por servicios ejecutados · un cliente puede figurar con varios especialistas`,
+      title: "Detalle por especialista",
+      sub: ctx.planificacion
+        ? `${rk.length} filas · meta anual según el reparto de asignacion.xlsx (con decimales = reparto proporcional)`
+        : `${rk.length} filas · avance vs meta ${ctx.corteTxt} · un cliente puede figurar con varios especialistas`,
       searchPlaceholder: "Buscar especialista…", searchKeys: ["Dim"],
-      rows: rk, pageSize: 10, totalLabel: " especialistas",
-      columns: [
-        { label: "Especialista", key: "Dim", cls: "name", render: (r) => esc(r.Dim) },
-        { label: "Programado", cls: "num", render: (r) => fmt(r.Meta) },
+      rows: rk, pageSize: 12, totalLabel: " filas",
+      columns: ctx.planificacion ? [
+        { label: "Especialista", key: "Dim", cls: "name", render: (r) => espNombre(r.Dim) },
+        { label: "Meta anual", cls: "num strong", render: (r) => n1(r.Meta) },
+        { label: "Meta Ene–Mar", cls: "num", render: (r) => n1(MT.sumCol(met.filter((x) => x[CFG.M.ESPECIALISTA] === r.Dim && x[CFG.M.MES] <= 3), CFG.M.META)) },
+        { label: "% de la meta", cls: "num", render: (r) => totalMeta > 0 ? fmt1(r.Meta / totalMeta * 100) + "%" : "—" },
+        { label: "Tareas", cls: "num", render: (r) => fmt(new Set(met.filter((x) => x[CFG.M.ESPECIALISTA] === r.Dim && (Number(x[CFG.M.META]) || 0) > 0).map((x) => MT.normKey(x[CFG.M.TAREA]))).size) },
+        { label: "Estado", cls: "ctr", render: (r) => r.Dim === CFG.SIN_ASIGNAR ? `<span class="badge amber"><i></i>Asignar</span>` : `<span class="badge plan"><i></i>Planificado</span>` },
+      ] : [
+        { label: "Especialista", key: "Dim", cls: "name", render: (r) => espNombre(r.Dim) },
+        { label: "Meta anual", cls: "num", render: (r) => n1(r.Meta) },
+        { label: `Meta ${ctx.corteTxt}`, cls: "num", render: (r) => n1(r.MetaFecha) },
         { label: "Ejecutado", cls: "num strong", render: (r) => fmt(r.Ejecutado) },
-        { label: "Cli. focalizados", cls: "num", render: (r) => fmt(r.ClientesFoc) },
+        { label: "Cli. focaliz.", cls: "num", render: (r) => fmt(r.ClientesFoc) },
         { label: "Cli. no focaliz.", cls: "num", render: (r) => fmt(r.ClientesNoFoc) },
-        { label: "Avance", render: (r) => r.Meta > 0 ? cellBar(r.Cumplimiento) : `<span class="muted">Sin meta</span>` },
-        { label: "Estado", cls: "ctr", render: (r) => r.Meta > 0 ? statusBadge(r.Cumplimiento) : `<span class="badge neutral"><i></i>Sin meta</span>` },
+        { label: "Avance", render: (r) => avanceCell(r.MetaFecha || (ctx.planificacion ? r.Meta : 0), r.Ejecutado, ctx) },
+        { label: "Estado", cls: "ctr", render: (r) => estadoCell(r.MetaFecha || (ctx.planificacion ? r.Meta : 0), r.Ejecutado, ctx) },
       ],
     });
   }
@@ -376,48 +582,76 @@
     const { eje, met } = currentData();
     if (!eje.length && !met.length) return noData("No hay especialistas con los filtros actuales.");
     const espSel = espSelActual();
+    const ctx = avanceCtx(eje, met);
+    const asig = asignacionCtx(met);
     const k = MT.kpis(eje, met);
     const hm = MT.heatmapCumplimiento(eje, met);
     const tm = MT.tendenciaMensual(eje, met);
-    const porProg = MT.metaVsEjec(eje, met, CFG.X.PROGRAMA, CFG.M.PROGRAMA);
-    const porComp = MT.metaVsEjec(eje, met, CFG.X.COMPLEJIDAD, CFG.M.COMPLEJIDAD, CFG.COMPLEJIDADES);
+    const metFecha = ctx.planificacion ? met : MT.metaHasta(met, ctx.corte);
+    const porComp = MT.metaVsEjec(eje, metFecha, CFG.X.COMPLEJIDAD, CFG.M.COMPLEJIDAD, CFG.COMPLEJIDADES);
+    const porServ = MT.metaVsEjec(eje, metFecha, CFG.X.SERVICIO, CFG.M.SERVICIO).sort((a, b) => MT.byCode(a.Dim, b.Dim));
 
-    const hint = espSel
-      ? ""
-      : `<div class="selectrow"><span class="muted" style="font-size:.78rem">Elige un especialista en el filtro <strong>Especialista</strong> de la barra superior para ver su detalle individual.</span></div>`;
+    const hint = espSel ? "" : `<div class="selectrow"><span class="muted" style="font-size:.8rem">Elige un especialista en el filtro <strong>Especialista</strong> de la barra superior para ver su detalle individual.</span></div>`;
 
     const kpis = [
-      kpiCard({
-        name: "Meta programada", icon: I.target, tone: "purple", value: fmt(k.meta),
-        foot: `<span class="muted">Total comprometido</span>`
-      }),
-      kpiCard({
-        name: "Ejecutado", icon: I.check, tone: "purple", value: fmt(k.ejecutado),
-        bar: k.cumplimiento, foot: `<span class="muted"><span class="strong">${fmt(k.actividades)}</span> actividades</span>`
-      }),
-      kpiCard({
-        name: "Cumplimiento", icon: I.spark, tone: estadoTone[global.POI.semaforo(k.cumplimiento)],
-        value: k.meta > 0 ? fmt1(k.cumplimiento) : "—", unit: k.meta > 0 ? "%" : "", bar: k.cumplimiento, barColor: CH.semColor(k.cumplimiento),
-        foot: `<span class="tag ${tagCls(k.cumplimiento)}">${estadoTxt[global.POI.semaforo(k.cumplimiento)]}</span>`
-      }),
-      kpiCard({
-        name: "Clientes atendidos", icon: I.building, tone: "blue", value: fmt(k.clientes),
-        foot: `<span class="muted"><span class="strong">${fmt(k.focalizados)}</span> focalizados</span>`
-      }),
+      kpiCard({ name: "Meta anual", icon: I.target, tone: "purple", value: fmt1(ctx.metaAnual),
+        foot: `<span class="muted">${espSel ? "Asignada a " + esc(espSel) : `${fmt(asig.nEsp)} especialistas`}</span>` }),
+      kpiCard({ name: ctx.planificacion ? "Meta del 1.er trimestre" : `Meta ${ctx.corteTxt}`, icon: I.calendar, tone: "blue",
+        value: fmt1(ctx.planificacion ? MT.sumCol(met.filter((r) => r[CFG.M.MES] <= 3), CFG.M.META) : ctx.metaFecha),
+        foot: `<span class="muted">${ctx.planificacion ? "Ene–Mar" : "Meta acumulada a la fecha"}</span>` }),
+      kpiCard({ name: "Ejecutado", icon: I.check, tone: "purple", value: fmt(k.ejecutado), bar: ctx.pctFecha,
+        foot: `<span class="muted"><span class="strong">${fmt(k.actividades)}</span> registros</span>` }),
+      ctx.planificacion
+        ? kpiCard({ name: "Meta sin asignar", icon: I.alert, tone: asig.sin > 0.05 ? "amber" : "green", value: fmt1(asig.sin),
+          foot: `<span class="muted">${asig.sin > 0.05 ? "Completar en asignacion.xlsx" : "Toda la meta tiene responsable"}</span>` })
+        : kpiCard({ name: "Cumplimiento a la fecha", icon: I.spark, tone: estadoTone[global.POI.semaforo(ctx.pctFecha || 0)],
+          value: ctx.pctFecha != null ? fmt1(ctx.pctFecha) : "—", unit: ctx.pctFecha != null ? "%" : "", bar: ctx.pctFecha, barColor: CH.semColor(ctx.pctFecha || 0),
+          foot: `<span class="tag ${tagCls(ctx.pctFecha || 0)}">${estadoTxt[global.POI.semaforo(ctx.pctFecha || 0)]}</span><span class="muted">vs meta ${ctx.corteTxt}</span>` }),
     ].join("");
 
     return `
+      ${planBanner(ctx, asig)}
       ${sectionHead(espSel ? "Resumen del especialista" : "Resumen de especialistas", espSel || "Todos los especialistas")}
       ${hint}
       <section class="grid grid-kpi">${kpis}</section>
-      ${panel("Cumplimiento por tarea y mes", "Semáforo de avance (% ejecutado sobre meta)", CH.heatmap(hm) + legendSemaforo)}
+      <section class="card tablecard" id="tbl-esp-mes"></section>
+      ${panel(ctx.planificacion ? "Meta por tarea y mes" : "Cumplimiento por tarea y mes", ctx.planificacion ? "Programado por mes (orden del catálogo)" : `Semáforo hasta ${CFG.MESES_NOMBRE[ctx.corte].toLowerCase()}; los meses siguientes muestran la meta`, CH.heatmap(hm, { corte: ctx.corte }) + (ctx.planificacion ? "" : legendSemaforo))}
       <section class="grid g-2">
-        ${panel("Evolución mensual", "Meta vs Ejecutado", CH.barsVertical(tm.map((r) => ({ label: r.Mes, a: r.Ejecutado, b: r.Meta })), { nameA: "Ejecutado", nameB: "Meta", capLimit: 12 }), legendMetaEjec)}
-        ${panel("Meta vs Ejecutado por complejidad", "", CH.barsMetaEjec(porComp, { gutter: 90 }), legendMetaEjec)}
+        ${mensualPanel(tm, ctx, "Evolución mensual")}
+        ${panel("Por complejidad", ctx.planificacion ? "Meta anual" : `Meta ${ctx.corteTxt} vs ejecutado`, CH.barsMetaEjec(porComp, { gutter: 90 }), legendMetaEjec)}
       </section>
-      ${panel("Meta vs Ejecutado por programa", "", CH.barsMetaEjec(porProg, { gutter: 140 }), legendMetaEjec)}
+      ${panel(ctx.planificacion ? "Meta por tipo de servicio" : "Avance por tipo de servicio", "", svcList(porServ, ctx))}
       <section class="card tablecard" id="tbl-esp"></section>
       <section class="card tablecard" id="tbl-cli-meta"></section>`;
+  }
+
+  // Tabla especialista × mes (meta; o ejecutado/meta cuando hay ejecución).
+  function mountEspMes(el, met, eje, ctx) {
+    const rows = MT.metaEspecialistaMes(met, eje);
+    const total = rows.reduce((n, r) => n + r.meta, 0);
+    const n1 = (v) => (Math.abs(v - Math.round(v)) < 0.05 ? fmt(v) : fmt1(v));
+    const mesCol = (m) => ({
+      label: CFG.MESES_ES[m], cls: "num mes",
+      render: (r) => {
+        const c = r.meses[m - 1];
+        if (!c.meta && !c.ejec) return `<span class="muted">·</span>`;
+        if (ctx.planificacion || m > ctx.corte) return `<span class="plan-num">${n1(c.meta)}</span>`;
+        const p = c.meta > 0 ? MT.pct(c.meta, c.ejec) : null;
+        return `<span class="mes-av" style="color:${p == null ? COL.muted : CH.semColor(p)}"><b>${n1(c.ejec)}</b>/${n1(c.meta)}</span>`;
+      },
+    });
+    mountTable(el, {
+      title: ctx.planificacion ? "Meta mensual por especialista" : "Ejecutado / meta mensual por especialista",
+      sub: "Reparto de metas.xlsx según asignacion.xlsx · las filas con ESPECIALISTA en metas.xlsx se usan tal cual",
+      searchPlaceholder: "Buscar especialista…", searchKeys: ["esp"], rows, pageSize: 20, totalLabel: " filas",
+      columns: [
+        { label: "Especialista", cls: "name", render: (r) => espNombre(r.esp) },
+        ...Array.from({ length: 12 }, (_, i) => mesCol(i + 1)),
+        { label: "Total", cls: "num strong", render: (r) => ctx.planificacion ? n1(r.meta) : `${fmt(r.ejec)}/${n1(r.meta)}` },
+        { label: "% meta", cls: "num", render: (r) => total > 0 ? fmt1(r.meta / total * 100) + "%" : "—" },
+        { label: "Tareas", cls: "num", render: (r) => fmt(r.nTareas) },
+      ],
+    });
   }
 
   // Celda "atendido / meta" con barra de progreso (meta de clientes)
@@ -430,6 +664,9 @@
   function afterEspecialistas() {
     const { eje: ejeG, met: metG } = currentData();
     const espSel = espSelActual();
+    const ctxE = avanceCtx(ejeG, metG);
+    const espMesEl = document.getElementById("tbl-esp-mes");
+    if (espMesEl) mountEspMes(espMesEl, metG, ejeG, ctxE);
     // CdD-FEST tiene metas individuales por especialista (metas.xlsx) y no
     // distingue focalización — se muestra una tabla propia en vez de la
     // repartición de meta de clientes de POI.
@@ -456,7 +693,7 @@
         const pool = D.aplicar(STORE, { ...FILTER, especialistas: [] });
         const ejePoi = pool.eje.filter((r) => r[CFG.X.PROGRAMA] === CFG.PROGRAMA_PRINCIPAL);
         const metPoi = pool.met.filter((r) => r[CFG.M.PROGRAMA] === CFG.PROGRAMA_PRINCIPAL);
-        const espsConMeta = new Set(metPoi.map((r) => r[CFG.M.ESPECIALISTA]).filter((v) => v != null && v !== ""));
+        const espsConMeta = new Set(metPoi.filter((r) => (Number(r[CFG.M.META]) || 0) > 0).map((r) => r[CFG.M.ESPECIALISTA]).filter((v) => v != null && v !== "" && v !== CFG.SIN_ASIGNAR));
         const metCli = D.filtrarClientes(STORE, FILTER).filter((r) => (r.PROGRAMA || CFG.PROGRAMA_PRINCIPAL) === CFG.PROGRAMA_PRINCIPAL);
         const kc = MT.kpisClientes(ejePoi, metCli);
         const metaNoFoc = Math.max(kc.meta_clientes - kc.meta_focalizados, 0);
@@ -564,9 +801,35 @@
   }
 
   // ---- CLIENTES -------------------------------------------------------------
+  function histTxt() {
+    const anios = Array.from(new Set((STORE.bd || []).map((b) => b.ANIO).filter(Boolean))).sort();
+    return anios.length ? ` · histórico ${anios.length > 1 ? anios[0] + "–" + anios[anios.length - 1] : anios[0]}` : "";
+  }
+
+  // Clientes en planificación: metas de clientes por mes (sin ejecución aún).
+  function viewClientesPlan() {
+    const metCli = metasClientesComparables([]);
+    const metaMes = MT.clientesMetaPorMes(metCli);
+    const kc = MT.kpisClientes([], metCli);
+    if (!metaMes.length) return noData("Aún no hay clientes atendidos ni metas de clientes para los filtros seleccionados.");
+    const nFoc = (STORE.focalizados || []).filter((r) => r.RUC != null && String(r.RUC).trim()).length;
+    lastExport = { filename: `meta_clientes_${CFG.ANIO_ACTUAL}.csv`, columns: ["Mes", "Focalizados", "No focalizados", "Total"],
+      rows: metaMes.map((r) => [CFG.MESES_NOMBRE[r.MesNum], r.FOCALIZADO, r.NO_FOCALIZADO, r.META_TOTAL]) };
+    return `${planBanner({ planificacion: true })}
+      ${sectionHead("Metas de clientes", `Programadas para ${CFG.ANIO_ACTUAL}${histTxt()}`)}
+      <section class="grid grid-kpi">
+        ${kpiCard({ name: "Meta de clientes", icon: I.building, tone: "blue", value: fmt(kc.meta_clientes), foot: `<span class="muted">Suma de metas mensuales</span>` })}
+        ${kpiCard({ name: "Meta focalizados", icon: I.pin, tone: "gold", value: fmt(kc.meta_focalizados), foot: `<span class="muted">${nFoc ? `${fmt(nFoc)} empresas en focalizados.xlsx` : "Falta la lista en focalizados.xlsx"}</span>` })}
+        ${kpiCard({ name: "Meta no focalizados", icon: I.user, tone: "purple", value: fmt(kc.meta_clientes - kc.meta_focalizados), foot: `<span class="muted">Clientes nuevos o recurrentes</span>` })}
+        ${kpiCard({ name: "Histórico para clasificar", icon: I.repeat, tone: STORE.bd.length ? "green" : "amber", value: STORE.bd.length ? fmt(new Set(STORE.bd.map((b) => b.RUC)).size) : "—", foot: `<span class="muted">${STORE.bd.length ? "RUC en bd.xlsx" + histTxt() : "Sin bd.xlsx"}</span>` })}
+      </section>
+      ${panel("Meta de clientes por mes", "Focalizados y no focalizados", CH.barsVertical(metaMes.map((r) => ({ label: r.Mes, a: r.FOCALIZADO, b: r.NO_FOCALIZADO })), { stacked: true, colA: COL.gold, colB: COL.soft, nameA: "Focalizados", nameB: "No focalizados", capLimit: 12 }),
+        `<div class="chart-legend"><span><i style="background:${COL.gold}"></i>Focalizados</span><span><i style="background:${COL.soft}"></i>No focalizados</span></div>`)}`;
+  }
+
   function viewClientes() {
     const { eje, met } = currentData();
-    if (!eje.length) return noData();
+    if (!eje.length) return viewClientesPlan();
     const metCli = metasClientesComparables(eje);
     const cl = MT.clientesResumen(eje, STORE.bd);
     const kc = MT.kpisClientes(eje, metCli);
@@ -597,7 +860,7 @@
       }),
       kpiCard({
         name: "Reenganchados", icon: I.repeat, tone: "amber", value: STORE.bd.length ? fmt(cl.reenganchados) : "—",
-        foot: `<span class="muted">${STORE.bd.length ? "Sin servicio 2023–2025 · complejidad media o alta" : "Sin histórico para clasificar"}</span>`
+        foot: `<span class="muted">${STORE.bd.length ? `Sin servicio ${CFG.ANIO_ACTUAL - CFG.ANIOS_SIN_SERVICIO}–${CFG.ANIO_ACTUAL - 1} · complejidad media o alta` : "Sin histórico para clasificar"}</span>`
       }),
     ].join("");
 
@@ -608,7 +871,7 @@
       { label: "Recurrentes", value: resto, color: COL.soft },
     ];
     const focSegs = [
-      { label: "Focalizados", value: cl.focalizados, color: COL.purple },
+      { label: "Focalizados", value: cl.focalizados, color: COL.gold },
       { label: "No focalizados", value: cl.no_focalizados, color: COL.soft },
     ];
 
@@ -629,7 +892,7 @@
       .map((r) => ({ label: r.Razon || r.RUC, value: r.Servicios, color: r.Focalizado ? COL.purple : COL.soft }));
 
     return `
-      ${sectionHead("Indicadores de clientes", "Cartera atendida en 2026")}
+      ${sectionHead("Indicadores de clientes", `Cartera atendida en ${CFG.ANIO_ACTUAL}${histTxt()}`)}
       <section class="grid grid-kpi">${kpis}</section>
       <section class="grid g-2">
         ${panel("Antigüedad de cliente", "Nuevos · reenganchados · recurrentes", STORE.bd.length ? CH.donut(tipoSegs, fmt(cl.total), "clientes") + CH.legendList(tipoSegs) : CH.empty("Sin histórico para clasificar clientes"))}
@@ -646,6 +909,7 @@
 
   function afterClientes() {
     if (!lastExport) return;
+    if (lastExport.filename.startsWith("meta_clientes")) return;
     const el = document.getElementById("tbl-cli");
     if (!el) return;
     const rows = lastExport.rows.map((a) => ({ RUC: a[0], Razon: a[1], TipoContrib: a[2], Foc: a[3], Meses: a[4], Servicios: a[5] }));
@@ -664,9 +928,16 @@
   }
 
   // ---- SERVICIOS ------------------------------------------------------------
-  function serviceCoverage(rows, totalMeta) {
+  function serviceCoverage(rows, totalMeta, plan) {
     if (!rows.length) return CH.empty();
-    return `<div class="service-coverage">${rows.slice().sort((a, b) => b.Meta - a.Meta || b.Ejecutado - a.Ejecutado).map((r) => {
+    if (plan) {
+      const max = Math.max(1, ...rows.map((r) => r.Meta));
+      return `<div class="service-coverage">${rows.slice().sort((a, b) => MT.byCode(a.Dim, b.Dim)).map((r) => `<article class="service-coverage-row">
+        <div class="service-coverage-heading"><h4>${esc(r.Dim)}</h4><strong class="service-percent" style="color:var(--purple-accent)">${fmt(r.Meta)}</strong></div>
+        <div class="service-coverage-track"><span style="width:${(r.Meta / max * 100).toFixed(1)}%;background:var(--purple-soft)"></span></div>
+        <div class="service-coverage-foot"><span>${totalMeta > 0 ? fmt1(r.Meta / totalMeta * 100) : 0}% de la meta</span></div></article>`).join("")}</div>`;
+    }
+    return `<div class="service-coverage">${rows.slice().sort((a, b) => MT.byCode(a.Dim, b.Dim)).map((r) => {
       const covered = Math.min(r.Meta, r.Ejecutado);
       const pending = Math.max(0, r.Meta - r.Ejecutado);
       const extra = Math.max(0, r.Ejecutado - r.Meta);
@@ -683,20 +954,34 @@
   function viewServicios() {
     const { eje: ejeGlobal, met: metGlobal } = currentData();
     if (!ejeGlobal.length && !metGlobal.length) return noData();
-    const disponibles = MT.metaVsEjec(ejeGlobal, metGlobal, CFG.X.SERVICIO, CFG.M.SERVICIO);
+    const disponibles = MT.metaVsEjec(ejeGlobal, metGlobal, CFG.X.SERVICIO, CFG.M.SERVICIO).sort((a, b) => MT.byCode(a.Dim, b.Dim));
     if (svcTareaFiltro && !disponibles.some((r) => r.Dim === svcTareaFiltro)) svcTareaFiltro = null;
     const matches = (r, col) => !svcTareaFiltro || MT.normKey(r[col]) === svcTareaFiltro;
     const eje = ejeGlobal.filter((r) => matches(r, CFG.X.SERVICIO) && (!svcComplejidadFiltro || r[CFG.X.COMPLEJIDAD] === svcComplejidadFiltro));
-    const met = metGlobal.filter((r) => matches(r, CFG.M.SERVICIO) && (!svcComplejidadFiltro || r[CFG.M.COMPLEJIDAD] === svcComplejidadFiltro));
+    const metAll = metGlobal.filter((r) => matches(r, CFG.M.SERVICIO) && (!svcComplejidadFiltro || r[CFG.M.COMPLEJIDAD] === svcComplejidadFiltro));
+    // Con ejecución se compara contra la meta acumulada al mes de corte.
+    const ctx = avanceCtx(ejeGlobal, metGlobal);
+    const plan = ctx.planificacion;
+    const met = plan ? metAll : MT.metaHasta(metAll, ctx.corte);
     const porServ = MT.metaVsEjec(eje, met, CFG.X.SERVICIO, CFG.M.SERVICIO);
-    const porTarea = MT.metaVsEjec(eje, met, CFG.X.TAREA, CFG.M.TAREA).sort((a, b) => b.Meta - a.Meta);
+    const porTarea = MT.metaVsEjec(eje, met, CFG.X.TAREA, CFG.M.TAREA).sort((a, b) => MT.byCode(a.Dim, b.Dim));
     const porComp = MT.metaVsEjec(eje, met, CFG.X.COMPLEJIDAD, CFG.M.COMPLEJIDAD, CFG.COMPLEJIDADES);
     const balance = MT.balanceServicios(porServ);
     const tareasBalance = MT.balanceServicios(porTarea);
     const percent = (v) => v == null ? "—" : fmt1(v);
-    const kpis = [
+    const metaTxt = plan ? "meta anual" : `meta ${ctx.corteTxt}`;
+    const kpis = plan ? [
+      kpiCard({ name: "Meta anual de servicios", icon: I.target, tone: "purple", value: fmt(balance.meta),
+        foot: `<span class="muted">${fmt(porServ.length)} tipos de servicio</span>` }),
+      kpiCard({ name: "Tareas con meta", icon: I.layers, tone: "blue", value: fmt(porTarea.filter((r) => r.Meta > 0).length),
+        foot: `<span class="muted">con meta programada en el año</span>` }),
+      kpiCard({ name: "Meta 1.er trimestre", icon: I.calendar, tone: "gold", value: fmt1(MT.sumCol(met.filter((r) => r[CFG.M.MES] <= 3), CFG.M.META)),
+        foot: `<span class="muted">Ene–Mar</span>` }),
+      kpiCard({ name: "Mayor peso", icon: I.spark, tone: "purple", value: porServ.length ? fmt1(Math.max(...porServ.map((r) => r.Meta)) / Math.max(1, balance.meta) * 100) : "—", unit: "%",
+        foot: `<span class="muted">${esc(truncate((porServ.slice().sort((a, b) => b.Meta - a.Meta)[0] || {}).Dim || "", 34))}</span>` }),
+    ].join("") : [
       kpiCard({ name: "Servicios ejecutados", icon: I.layers, tone: "purple", value: fmt(balance.ejecutado),
-        foot: `<span class="muted">Meta ${fmt(balance.meta)}</span>` }),
+        foot: `<span class="muted">Meta ${ctx.corteTxt}: ${fmt1(balance.meta)} · anual ${fmt(MT.sumCol(metAll, CFG.M.META))}</span>` }),
       kpiCard({ name: "Avance por volumen", icon: I.spark, tone: "purple", value: percent(balance.avance), unit: balance.avance == null ? "" : "%",
         bar: balance.avance, foot: `<span class="muted">${balance.avance == null ? "Sin meta para comparar" : "Incluye excedentes"}</span>` }),
       kpiCard({ name: "Cobertura ponderada", icon: I.target, tone: "blue", value: percent(balance.cobertura), unit: balance.cobertura == null ? "" : "%",
@@ -713,16 +998,16 @@
       columns: ["Tipo de servicio", "Meta", "Ejecutado", "Avance por volumen %", "Peso de meta %", "Meta cubierta", "Pendiente", "Sobre meta", "Ejecución sin meta", "Complejidad seleccionada"],
       rows: porServ.map((r) => [r.Dim, r.Meta, r.Ejecutado, r.Meta > 0 ? r.Cumplimiento : "", balance.meta > 0 ? MT.pct(balance.meta, r.Meta) : "", Math.min(r.Meta, r.Ejecutado), r.Brecha, r.Meta > 0 ? Math.max(0, r.Ejecutado-r.Meta) : 0, r.Meta > 0 ? 0 : r.Ejecutado, svcComplejidadFiltro || "Todas"]),
     };
-    return `${sectionHead("Avance de servicios", [svcTareaFiltro || "Todos los tipos", svcComplejidadFiltro ? "Complejidad " + svcComplejidadFiltro.toLowerCase() : "Todas las complejidades"].join(" · "))}
+    return `${planBanner(ctx)}${sectionHead(plan ? "Metas de servicios" : "Avance de servicios", [svcTareaFiltro || "Todos los tipos", svcComplejidadFiltro ? "Complejidad " + svcComplejidadFiltro.toLowerCase() : "Todas las complejidades", plan ? "" : "vs " + metaTxt].filter(Boolean).join(" · "))}
       ${selector}<section class="grid grid-kpi">${kpis}</section>
       <section class="services-visual-grid">
-        ${panel(svcComplejidadFiltro ? "Servicios de complejidad " + svcComplejidadFiltro.toLowerCase() : "Avance por servicio", "Ejecutado / meta · + excedente", serviceCoverage(porServ, balance.meta))}
+        ${panel(svcComplejidadFiltro ? "Servicios de complejidad " + svcComplejidadFiltro.toLowerCase() : (plan ? "Meta por tipo de servicio" : "Avance por servicio"), plan ? "Meta anual y peso de cada servicio" : `Ejecutado / ${metaTxt} · + excedente`, serviceCoverage(porServ, balance.meta, plan))}
         <aside class="services-complexity">
-          ${panel("Por complejidad", "Cantidad de servicios", CH.barsMetaEjec(porComp, { gutter: 65 }), legendMetaEjec)}
-          ${panel("Composición de la ejecución", "Por complejidad", CH.donut(porComp.map((r, i) => ({ label: r.Dim, value: r.Ejecutado, color: ({ Alta: COL.purple, Media: COL.blue, Baja: COL.soft })[r.Dim] || COL.muted })), fmt(balance.ejecutado), "servicios") + CH.legendList(porComp.map((r, i) => ({ label: r.Dim, value: r.Ejecutado, color: ({ Alta: COL.purple, Media: COL.blue, Baja: COL.soft })[r.Dim] || COL.muted }))))}
+          ${panel("Por complejidad", plan ? "Meta anual" : `Ejecutado vs ${metaTxt}`, CH.barsMetaEjec(porComp, { gutter: 65 }), legendMetaEjec)}
+          ${panel(plan ? "Composición de la meta" : "Composición de la ejecución", "Por complejidad", CH.donut(porComp.map((r) => ({ label: r.Dim, value: plan ? r.Meta : r.Ejecutado, color: ({ Alta: COL.purple, Media: COL.blue, Baja: COL.gold })[r.Dim] || COL.muted })), fmt(plan ? balance.meta : balance.ejecutado), "servicios") + CH.legendList(porComp.map((r) => ({ label: r.Dim, value: plan ? r.Meta : r.Ejecutado, color: ({ Alta: COL.purple, Media: COL.blue, Baja: COL.gold })[r.Dim] || COL.muted }))))}
         </aside>
       </section>
-      <details class="service-method" ${svcTareaFiltro || svcComplejidadFiltro ? "open" : ""}><summary>Por tarea · ${percent(tareasBalance.cobertura)}${tareasBalance.cobertura == null ? " (sin meta)" : "% de cobertura"}</summary><div class="service-task-chart">${serviceCoverage(porTarea, tareasBalance.meta)}</div></details>
+      <details class="service-method" ${svcTareaFiltro || svcComplejidadFiltro ? "open" : ""}><summary>Por tarea · ${plan ? fmt(porTarea.filter((r) => r.Meta > 0).length) + " tareas con meta" : percent(tareasBalance.cobertura) + (tareasBalance.cobertura == null ? " (sin meta)" : "% de cobertura")}</summary><div class="service-task-chart">${serviceCoverage(porTarea, tareasBalance.meta, plan)}</div></details>
       <details class="service-method"><summary>Cómo se calcula</summary><p>Volumen: ejecutado ÷ meta. Ponderado: peso según la meta y aporte máximo de 100% por tipo. Por tarea se aplica el mismo límite a cada tarea.</p></details>`;
   }
 
@@ -810,7 +1095,9 @@
       <button class="seg ${calMode === "especialista" ? "active" : ""}" data-mode="especialista">Por especialista</button>
     </div>`;
     if (!rows.length) return `${sectionHead("Intervenciones World Vision", "Servicios del POI financiados por World Vision")}${tabs}
-      ${noData("No se encontraron registros POI con FINANCIADO = World Vision. Comprueba los valores de esa columna en data/ejecucion.xlsx.")}`;
+      ${STORE.ejecucion.length
+        ? noData("No se encontraron registros POI con FINANCIADO = WORLDVISION. Comprueba los valores de esa columna en data/ejecucion.xlsx.")
+        : `<div class="plan-banner" role="note"><span class="plan-ico">${svgIco(I.calendar)}</span><div><strong>World Vision ${CFG.ANIO_ACTUAL}: a la espera de la primera ejecución</strong><p>Esta vista se llena sola con los servicios del POI que en <code>data/ejecucion.xlsx</code> tengan <code>FINANCIADO = WORLDVISION</code> (con <code>FECHA_I</code> = inicio y <code>FECHA</code> = fin). Verás el resumen, el calendario por RUC y las salidas por especialista.</p></div></div>`}`;
     if (calMode === "ruc") return `${sectionHead("Intervenciones por RUC", "Fechas y detalle de atención por persona o empresa")}${tabs}${viewWvRuc(rows)}`;
     if (calMode === "especialista") return `${sectionHead("Salidas por especialista", "Días de intervención, empresas atendidas y temáticas realizadas")}${tabs}${viewWvEspecialista(rows)}`;
     const byMonth = new Map(), byEsp = new Map(), byTema = new Map();
@@ -1537,8 +1824,8 @@
       const context = document.createElement("div");
       context.className = "scope-note";
       context.setAttribute("role", "status");
-      context.textContent = `${FILTER.programas.length ? FILTER.programas.join(", ") : "Todos los programas"} · ${FILTER.meses.length ? FILTER.meses.map((m) => CFG.MESES_ES[m]).join(", ") : "Todos los meses de 2026"} · ${FILTER.especialistas.length ? FILTER.especialistas.join(", ") : "Todo el equipo"}. Clientes únicos por RUC; las metas de clientes se suman por mes y programa. ${FILTER.especialistas.length ? "Las metas institucionales de clientes no se comparan con un especialista." : "Los porcentajes comparan con la meta del período seleccionado."}`;
-      if (VIEW === "servicios") context.textContent = `${FILTER.programas.length ? FILTER.programas.join(", ") : "Todos los programas"} · ${FILTER.meses.length ? FILTER.meses.map((m) => CFG.MESES_ES[m]).join(", ") : "Todos los meses de 2026"} · ${FILTER.especialistas.length ? FILTER.especialistas.join(", ") : "Todo el equipo"}.`;
+      context.textContent = `${FILTER.programas.length ? FILTER.programas.join(", ") : "Todos los programas"} · ${FILTER.meses.length ? FILTER.meses.map((m) => CFG.MESES_ES[m]).join(", ") : `Todos los meses de ${CFG.ANIO_ACTUAL}`} · ${FILTER.especialistas.length ? FILTER.especialistas.join(", ") : "Todo el equipo"}. Clientes únicos por RUC; las metas de clientes se suman por mes y programa. ${FILTER.especialistas.length ? "Las metas institucionales de clientes no se comparan con un especialista." : "Los porcentajes comparan con la meta del período seleccionado."}`;
+      if (VIEW === "servicios") context.textContent = `${FILTER.programas.length ? FILTER.programas.join(", ") : "Todos los programas"} · ${FILTER.meses.length ? FILTER.meses.map((m) => CFG.MESES_ES[m]).join(", ") : `Todos los meses de ${CFG.ANIO_ACTUAL}`} · ${FILTER.especialistas.length ? FILTER.especialistas.join(", ") : "Todo el equipo"}.`;
       host.prepend(context);
     }
     window.scrollTo({ top: 0, behavior: "instant" in window ? "instant" : "auto" });
@@ -1715,6 +2002,7 @@
         .catch(() => { });
 
       STORE = await global.POI.data.loadAll();
+      NAV = navDisponible();
       buildRail();
       buildFilterBar();
       const h = (location.hash || "").replace("#", "");

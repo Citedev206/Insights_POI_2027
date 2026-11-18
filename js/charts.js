@@ -1,18 +1,18 @@
 /* ============================================================
    js/charts.js — Generadores de gráficos SVG (sin dependencias)
-   Estética alineada a Dashboard POI 2026.dc.html: morados
+   Estética CITE 2027: ciruela institucional, verde azulado y dorado,
    institucionales, trazos limpios y semáforo de cumplimiento.
    ============================================================ */
 (function (global) {
   "use strict";
 
   const COL = {
-    purple: "#5C1F5C", accent: "#7A2A7A", mid: "#9B4D9B", soft: "#B79BB7",
-    tint: "#F3E9F3", track: "#F0ECF3", grid: "#F0ECF3", axis: "#E8E2EC",
-    ink: "#28232E", text: "#3D3645", muted: "#867E90", muted2: "#A39CAB",
-    blue: "#2E5FD4",
+    purple: "#4A1A4E", accent: "#7B2D80", mid: "#A35AA6", soft: "#CDB6D0",
+    tint: "#F6EFF7", track: "#EFEBF2", grid: "#F1EDF4", axis: "#E6E0EB",
+    ink: "#1F1A24", text: "#39323F", muted: "#7F7788", muted2: "#A39CAB",
+    blue: "#0E7C86", gold: "#B07F22",
   };
-  const SEM = { verde: "#1F9D6B", amarillo: "#E0A82E", naranja: "#D9731E", rojo: "#C0392B" };
+  const SEM = { verde: "#178A5C", amarillo: "#D99A1E", naranja: "#D4691A", rojo: "#C2362B" };
   const semColor = (s) => SEM[global.POI.semaforo(s)];
 
   const nf = new Intl.NumberFormat("es-PE");
@@ -266,13 +266,17 @@
   // Heatmap tarea × mes (% cumplimiento) — HTML para nitidez del texto
   // hm: { meses:[...], rows:[{label, cells:[pct|null]}] }
   // -------------------------------------------------------------------------
-  function heatmap(hm) {
+  // opts.corte: último mes con ejecución. Los meses posteriores (o todos, en
+  // planificación) se muestran como "programado" en tono neutro, no en rojo.
+  function heatmap(hm, opts) {
+    opts = opts || {};
     if (!hm || !hm.rows.length) return empty("Sin metas por tarea para el periodo");
+    const nums = hm.mesesNum || [];
     const cellColor = (v) => v == null ? "transparent" : semColor(typeof v === "object" ? v.pct : v);
     const head = `<div class="hm-row hm-head"><div class="hm-lab"></div>${hm.meses.map((m) => `<div class="hm-cell hm-mes">${esc(m)}</div>`).join("")}</div>`;
     const body = hm.rows.map((r) => {
       const pctTotal = r.metaTotal > 0 ? Math.round((r.ejecTotal / r.metaTotal) * 100) : null;
-      const numTxt = r.metaTotal > 0 ? `${pctTotal}% (${fmt(r.ejecTotal)}/${fmt(r.metaTotal)})` : `${fmt(r.ejecTotal)} s/m`;
+      const numTxt = !opts.corte ? `meta ${fmt1(r.metaTotal)}` : r.metaTotal > 0 ? `${pctTotal}% (${fmt(r.ejecTotal)}/${fmt(r.metaTotal)})` : `${fmt(r.ejecTotal)} s/m`;
       const fullTitle = `${r.label} | ${r.metaTotal > 0 ? 'Prog: ' + fmt(r.metaTotal) + ' Ejec: ' + fmt(r.ejecTotal) : 'Sin meta'}`;
       return `
       <div class="hm-row">
@@ -280,9 +284,13 @@
           <span class="hm-lab-t">${esc(r.label)}</span>
           <span class="hm-lab-n">${numTxt}</span>
         </div>
-        ${r.cells.map((v) => {
+        ${r.cells.map((v, ci) => {
       if (v == null) return `<div class="hm-cell" style="background:transparent"></div>`;
       const cell = typeof v === "object" ? v : { pct: v, meta: null, ejec: null };
+      const futuro = !opts.corte || (nums[ci] != null && nums[ci] > opts.corte);
+      if (futuro && !cell.sinMeta && cell.meta != null && !(cell.ejec > 0)) {
+        return `<div class="hm-cell hm-plan" title="Programado · meta ${fmt1(cell.meta)}"><span class="hm-pct">${fmt1(cell.meta)}</span><span class="hm-detail">meta</span></div>`;
+      }
       // Ejecutado sin meta programada: celda neutra (no semáforo), muestra
       // solo la cantidad ejecutada en vez de un % de cumplimiento.
       if (cell.sinMeta || cell.pct == null) {
